@@ -1,17 +1,11 @@
 """
-StockReserv — Gestion de Stock & Reservations Equipe
-=======================================================
-Deploye sur Streamlit Community Cloud.
-Colonnes Excel : VCD, Ref Fournisseur Principal, Libelle Complet,
-Qte Livr/Aff Ligne, Marque, Affichage, Processeur, Memoire,
-Stockage, PV au Resah, Tx de marge, Montant marge unitaire
+StockReserv v3 — Gestion de Stock & Reservations
 """
 import streamlit as st
 import pandas as pd
 import sqlite3
 import os
 import math
-import tempfile
 from datetime import datetime, date
 from contextlib import contextmanager
 
@@ -34,7 +28,6 @@ COLUMN_MAPPING = {
 }
 REQUIRED_COLUMNS = ["vcd", "libelle", "stock_brut"]
 
-# Base de donnees dans un dossier persistent
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "stockreserv.db")
@@ -152,30 +145,43 @@ def import_excel(uploaded_file, mode="premier"):
         noms = [COLUMN_MAPPING[k][0] for k in missing]
         return False, f"Colonnes introuvables : {', '.join(noms)}\nColonnes detectees : {list(df.columns)}"
 
-    records = []
+    # Construire les records en gerant les doublons VCD
+    # Si un VCD apparait plusieurs fois, on garde la derniere ligne
+    # et on ADDITIONNE les quantites
+    raw_records = {}
     skipped = 0
     for _, row in df.iterrows():
         vcd = safe_str(row.get(mapping.get("vcd", ""), ""))
         if not vcd:
             skipped += 1
             continue
-        records.append({
-            "vcd": vcd,
-            "ref_fournisseur": safe_str(row.get(mapping.get("ref_fournisseur", ""), "")),
-            "libelle": safe_str(row.get(mapping.get("libelle", ""), "")),
-            "stock_brut": safe_int(row.get(mapping.get("stock_brut", ""), 0)),
-            "marque": safe_str(row.get(mapping.get("marque", ""), "")),
-            "affichage": safe_str(row.get(mapping.get("affichage", ""), "")),
-            "processeur": safe_str(row.get(mapping.get("processeur", ""), "")),
-            "memoire": safe_str(row.get(mapping.get("memoire", ""), "")),
-            "stockage": safe_str(row.get(mapping.get("stockage", ""), "")),
-            "pv_resah": safe_float(row.get(mapping.get("pv_resah", ""), 0)),
-            "tx_marge": safe_float(row.get(mapping.get("tx_marge", ""), 0)),
-            "marge_unitaire": safe_float(row.get(mapping.get("marge_unitaire", ""), 0)),
-        })
 
+        stock = safe_int(row.get(mapping.get("stock_brut", ""), 0))
+
+        if vcd in raw_records:
+            # Doublon : on additionne le stock
+            raw_records[vcd]["stock_brut"] += stock
+        else:
+            raw_records[vcd] = {
+                "vcd": vcd,
+                "ref_fournisseur": safe_str(row.get(mapping.get("ref_fournisseur", ""), "")),
+                "libelle": safe_str(row.get(mapping.get("libelle", ""), "")),
+                "stock_brut": stock,
+                "marque": safe_str(row.get(mapping.get("marque", ""), "")),
+                "affichage": safe_str(row.get(mapping.get("affichage", ""), "")),
+                "processeur": safe_str(row.get(mapping.get("processeur", ""), "")),
+                "memoire": safe_str(row.get(mapping.get("memoire", ""), "")),
+                "stockage": safe_str(row.get(mapping.get("stockage", ""), "")),
+                "pv_resah": safe_float(row.get(mapping.get("pv_resah", ""), 0)),
+                "tx_marge": safe_float(row.get(mapping.get("tx_marge", ""), 0)),
+                "marge_unitaire": safe_float(row.get(mapping.get("marge_unitaire", ""), 0)),
+            }
+
+    records = list(raw_records.values())
     if not records:
         return False, "Aucun produit trouve dans le fichier."
+
+    doublons = len(df) - skipped - len(records)
 
     with get_db() as conn:
         if mode == "hebdo":
@@ -189,8 +195,9 @@ def import_excel(uploaded_file, mode="premier"):
                     updated += 1
                 else:
                     conn.execute("""
-                        INSERT INTO produits (vcd, ref_fournisseur, libelle, stock_brut, marque, affichage,
-                            processeur, memoire, stockage, pv_resah, tx_marge, marge_unitaire, updated_at)
+                        INSERT OR REPLACE INTO produits
+                        (vcd, ref_fournisseur, libelle, stock_brut, marque, affichage,
+                         processeur, memoire, stockage, pv_resah, tx_marge, marge_unitaire, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """, (r["vcd"], r["ref_fournisseur"], r["libelle"], r["stock_brut"],
                           r["marque"], r["affichage"], r["processeur"], r["memoire"],
@@ -198,19 +205,22 @@ def import_excel(uploaded_file, mode="premier"):
                     new += 1
             msg = f"Mise a jour hebdo : {updated} stocks mis a jour"
             if new: msg += f", {new} nouveaux produits"
+            if doublons > 0: msg += f" ({doublons} doublons VCD fusionnes)"
             if skipped: msg += f" ({skipped} lignes vides ignorees)"
             return True, msg
         else:
             conn.execute("DELETE FROM produits")
             for r in records:
                 conn.execute("""
-                    INSERT INTO produits (vcd, ref_fournisseur, libelle, stock_brut, marque, affichage,
-                        processeur, memoire, stockage, pv_resah, tx_marge, marge_unitaire, updated_at)
+                    INSERT OR REPLACE INTO produits
+                    (vcd, ref_fournisseur, libelle, stock_brut, marque, affichage,
+                     processeur, memoire, stockage, pv_resah, tx_marge, marge_unitaire, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """, (r["vcd"], r["ref_fournisseur"], r["libelle"], r["stock_brut"],
                       r["marque"], r["affichage"], r["processeur"], r["memoire"],
                       r["stockage"], r["pv_resah"], r["tx_marge"], r["marge_unitaire"]))
             msg = f"Import complet : {len(records)} produits charges !"
+            if doublons > 0: msg += f" ({doublons} doublons VCD fusionnes, stocks additionnes)"
             if skipped: msg += f" ({skipped} lignes vides ignorees)"
             return True, msg
 
@@ -300,7 +310,7 @@ init_db()
 st.markdown("""
 <div class="header-box">
     <h1>📦 StockReserv</h1>
-    <p>Gestion de stock & reservations equipe — partagez le lien avec votre equipe</p>
+    <p>Gestion de stock & reservations equipe — partagez le lien</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -309,8 +319,7 @@ with st.sidebar:
     st.markdown("### 📂 Import Excel")
     import_mode = st.radio(
         "Type d'import :",
-        ["📥 Premier import (tout charger)", "🔄 Mise à jour hebdo (stock uniquement)"],
-        help="Premier import = remplace tout. Hebdo = met à jour seulement Qté Livr/Aff Ligne.")
+        ["📥 Premier import (tout charger)", "🔄 Mise à jour hebdo (stock uniquement)"])
     mode = "premier" if "Premier" in import_mode else "hebdo"
 
     uploaded = st.file_uploader("Fichier stock (.xlsx)", type=["xlsx", "xls"])
@@ -500,11 +509,11 @@ with tab_reservations:
     else:
         for r in resas:
             emoji = {"actif": "🟢", "annule": "🔴", "consomme": "✅"}.get(r["statut"], "⚪")
-            bg = {"actif": "#1A3D2A", "annule": "#3D1F1F", "consomme": "#1A2D42"}.get(r["statut"], "#1A2D42")
+            cbg = {"actif": "#1A3D2A", "annule": "#3D1F1F", "consomme": "#1A2D42"}.get(r["statut"], "#1A2D42")
             label = {"actif": "Actif", "annule": "Annulé", "consomme": "Consommé"}.get(r["statut"], r["statut"])
 
             st.markdown(f"""
-            <div class="resa-card" style="background:{bg};">
+            <div class="resa-card" style="background:{cbg};">
                 <strong>{emoji} #{r['id']}</strong> — <b>{r['personne']}</b> →
                 {r['quantite']}x <code>{r['vcd']}</code> ({r.get('libelle', '')})
                 <br/><small>📅 {r['date_reservation']} | 💬 {r.get('commentaire', '') or '—'} | {label}</small>
