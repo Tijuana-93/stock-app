@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import libsql_experimental as libsql
-import math
+import math, requests, json
 from datetime import date
 
 # === CONFIG ===
 IMPORT_PASSWORD = "admin@123"
-TURSO_URL = st.secrets["TURSO_URL"]
+TURSO_URL = st.secrets["TURSO_URL"].replace("libsql://","https://")
 TURSO_TOKEN = st.secrets["TURSO_TOKEN"]
 
 COL = {
@@ -38,48 +37,84 @@ def ss(v):
     s=str(v).strip()
     return "" if s.lower() in ("nan","none","nat","") else s
 
-# === DATABASE (Turso Cloud) ===
-def get_conn():
-    return libsql.connect("stockreserv", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+# === TURSO HTTP API ===
+def turso_execute(sql, args=None):
+    """Execute SQL via Turso HTTP API."""
+    headers = {"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"}
+    body = {"statements": [{"q": sql}]}
+    if args:
+        body["statements"][0]["params"] = [_convert_arg(a) for a in args]
+    
+    resp = requests.post(f"{TURSO_URL}/v2/pipeline", headers=headers, json=body)
+    if resp.status_code != 200:
+        raise Exception(f"Turso error {resp.status_code}: {resp.text}")
+    
+    data = resp.json()
+    results = data.get("results", [])
+    if not results:
+        return {"cols": [], "rows": []}
+    
+    result = results[0]
+    if "error" in result:
+        raise Exception(f"SQL error: {result['error']}")
+    
+    response = result.get("response", {})
+    if response.get("type") == "execute":
+        res = response.get("result", {})
+        cols = [c["name"] for c in res.get("cols", [])]
+        rows = []
+        for row in res.get("rows", []):
+            rows.append({cols[i]: _extract_val(cell) for i, cell in enumerate(row)})
+        return {"cols": cols, "rows": rows}
+    return {"cols": [], "rows": []}
 
+def _convert_arg(v):
+    if v is None: return {"type": "null", "value": None}
+    if isinstance(v, int): return {"type": "integer", "value": str(v)}
+    if isinstance(v, float): return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+def _extract_val(cell):
+    if cell is None: return None
+    if isinstance(cell, dict):
+        t = cell.get("type","")
+        v = cell.get("value")
+        if t == "null" or v is None: return None
+        if t == "integer": return int(v)
+        if t == "float": return float(v)
+        return str(v)
+    return cell
+
+def turso_batch(statements):
+    """Execute multiple statements in one request."""
+    headers = {"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"}
+    stmts = []
+    for sql, args in statements:
+        s = {"q": sql}
+        if args:
+            s["params"] = [_convert_arg(a) for a in args]
+        stmts.append(s)
+    
+    body = {"statements": stmts}
+    resp = requests.post(f"{TURSO_URL}/v2/pipeline", headers=headers, json=body)
+    if resp.status_code != 200:
+        raise Exception(f"Turso error: {resp.text}")
+
+def q(sql, p=None, f="all"):
+    res = turso_execute(sql, p)
+    if f == "all": return res["rows"]
+    if f == "one": return res["rows"][0] if res["rows"] else None
+    return None
+
+def qx(sql, p=None):
+    turso_execute(sql, p)
+
+# === INIT ===
 def init():
-    conn = get_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS produits(
-            article TEXT PRIMARY KEY, groupe TEXT DEFAULT '', code_ic1 TEXT DEFAULT '',
-            vcd TEXT DEFAULT '', ref_fournisseur TEXT DEFAULT '', libelle TEXT DEFAULT '',
-            marque TEXT DEFAULT '', affichage TEXT DEFAULT '', processeur TEXT DEFAULT '',
-            memoire TEXT DEFAULT '', stockage TEXT DEFAULT '',
-            qte_commandee INTEGER DEFAULT 0, stock_brut INTEGER DEFAULT 0,
-            prix_ha_scc REAL DEFAULT 0, pv_resah REAL DEFAULT 0, pv_client REAL DEFAULT 0,
-            tx_marge REAL DEFAULT 0, marge_unitaire REAL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS reservations(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, personne TEXT NOT NULL,
-            article TEXT NOT NULL, quantite INTEGER NOT NULL,
-            commentaire TEXT DEFAULT '', date_reservation DATE DEFAULT CURRENT_DATE,
-            statut TEXT DEFAULT 'actif');
-    """)
-    conn.commit()
-
-def q(sql, p=(), f="all"):
-    conn = get_conn()
-    cur = conn.execute(sql, p)
-    if f=="all":
-        cols = [d[0] for d in cur.description] if cur.description else []
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-    elif f=="one":
-        cols = [d[0] for d in cur.description] if cur.description else []
-        row = cur.fetchone()
-        return dict(zip(cols, row)) if row else None
-    else:
-        conn.commit()
-        return cur.lastrowid
-
-def qx(sql, p=()):
-    """Execute sans retour (INSERT, UPDATE, DELETE)"""
-    conn = get_conn()
-    conn.execute(sql, p)
-    conn.commit()
+    turso_batch([
+        ("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)", None),
+        ("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')", None),
+    ])
 
 # === IMPORT ===
 def fcol(dfc, names):
@@ -96,7 +131,7 @@ def do_import(uf, mode):
         if f: mp[k]=f
     for rq in REQUIRED_COLUMNS:
         if rq not in mp:
-            return False,f"Colonne manquante: {rq}\nTrouvées: {list(df.columns)}"
+            return False,f"Colonne manquante: {rq}"
     recs=[]; skip=0
     for _,row in df.iterrows():
         art=ss(row.get(mp.get("article",""),"")); lib=ss(row.get(mp.get("libelle",""),""))
@@ -110,56 +145,49 @@ def do_import(uf, mode):
         recs.append(r)
     if not recs: return False,"Aucun produit trouvé."
 
-    conn = get_conn()
     if mode=="hebdo":
         u=n=0
         for r in recs:
-            ex = conn.execute("SELECT 1 FROM produits WHERE article=?",(r["article"],)).fetchone()
+            ex = q("SELECT 1 FROM produits WHERE article=?",[r["article"]],f="one")
             if ex:
-                conn.execute("UPDATE produits SET stock_brut=? WHERE article=?",(r["stock_brut"],r["article"])); u+=1
+                qx("UPDATE produits SET stock_brut=? WHERE article=?",[r["stock_brut"],r["article"]]); u+=1
             else:
-                _do_ins(conn,r); n+=1
-        conn.commit()
-        return True,f"✅ Hebdo: {u} stocks mis à jour" + (f", {n} nouveaux" if n else "")
+                _do_ins(r); n+=1
+        return True,f"✅ Hebdo: {u} stocks mis à jour"+(f", {n} nouveaux" if n else "")
     else:
-        conn.execute("DELETE FROM produits")
-        for r in recs: _do_ins(conn,r)
-        conn.commit()
+        qx("DELETE FROM produits")
+        for r in recs: _do_ins(r)
         return True,f"✅ {len(recs)} produits importés"
 
-def _do_ins(conn,r):
-    conn.execute("INSERT OR REPLACE INTO produits(article,groupe,code_ic1,vcd,ref_fournisseur,libelle,marque,affichage,processeur,memoire,stockage,qte_commandee,stock_brut,prix_ha_scc,pv_resah,pv_client,tx_marge,marge_unitaire) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    (r["article"],r.get("groupe",""),r.get("code_ic1",""),r.get("vcd",""),r.get("ref_fournisseur",""),r["libelle"],r.get("marque",""),r.get("affichage",""),r.get("processeur",""),r.get("memoire",""),r.get("stockage",""),r.get("qte_commandee",0),r["stock_brut"],r.get("prix_ha_scc",0),r.get("pv_resah",0),r.get("pv_client",0),r.get("tx_marge",0),r.get("marge_unitaire",0)))
+def _do_ins(r):
+    qx("INSERT OR REPLACE INTO produits(article,groupe,code_ic1,vcd,ref_fournisseur,libelle,marque,affichage,processeur,memoire,stockage,qte_commandee,stock_brut,prix_ha_scc,pv_resah,pv_client,tx_marge,marge_unitaire) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    [r["article"],r.get("groupe",""),r.get("code_ic1",""),r.get("vcd",""),r.get("ref_fournisseur",""),r["libelle"],r.get("marque",""),r.get("affichage",""),r.get("processeur",""),r.get("memoire",""),r.get("stockage",""),r.get("qte_commandee",0),r["stock_brut"],r.get("prix_ha_scc",0),r.get("pv_resah",0),r.get("pv_client",0),r.get("tx_marge",0),r.get("marge_unitaire",0)])
 
 def get_produits():
-    return q("""SELECT p.*, 
+    return q("""SELECT p.*,
         p.stock_brut - COALESCE((SELECT SUM(r.quantite) FROM reservations r WHERE r.article=p.article AND r.statut='actif'),0) AS dispo,
         COALESCE((SELECT SUM(r.quantite) FROM reservations r WHERE r.article=p.article AND r.statut='actif'),0) AS reserve
         FROM produits p ORDER BY p.marque, p.libelle""")
 
 def get_reservations(sf_val=None):
-    sql="SELECT r.*, p.libelle, p.marque FROM reservations r LEFT JOIN produits p ON r.article=p.article"
-    p=[]
-    if sf_val: sql+=" WHERE r.statut=?"; p.append(sf_val)
-    return q(sql+" ORDER BY r.id DESC",tuple(p))
+    if sf_val:
+        return q("SELECT r.*, p.libelle, p.marque FROM reservations r LEFT JOIN produits p ON r.article=p.article WHERE r.statut=? ORDER BY r.id DESC",[sf_val])
+    return q("SELECT r.*, p.libelle, p.marque FROM reservations r LEFT JOIN produits p ON r.article=p.article ORDER BY r.id DESC")
 
 # ================================================================
 # PAGE
 # ================================================================
 st.set_page_config(page_title="StockReserv",page_icon="📦",layout="wide")
-
 st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 .stApp { background: #F8FAFC; }
 section[data-testid="stSidebar"] { background: #1E293B !important; }
 section[data-testid="stSidebar"] * { color: #E2E8F0 !important; }
 section[data-testid="stSidebar"] .stTextInput input { background: #334155 !important; color: #F1F5F9 !important; border-color: #475569 !important; }
-
 .hdr { background: linear-gradient(135deg, #1E293B, #334155); padding: 28px 36px; border-radius: 16px; margin-bottom: 24px; }
 .hdr h1 { color: #F8FAFC !important; font-size: 2.2em !important; margin:0 !important; font-weight:700 !important; }
 .hdr span { color: #F59E0B; }
 .hdr p { color: #94A3B8; margin: 8px 0 0; font-size: 1.05em; }
-
 .kpi { background: white; border-radius: 14px; padding: 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #E2E8F0; }
 .kpi h2 { margin:0 !important; font-size: 2em !important; font-weight: 700 !important; }
 .kpi p { color: #64748B; margin: 4px 0 0; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -167,9 +195,7 @@ section[data-testid="stSidebar"] .stTextInput input { background: #334155 !impor
 .kpi.green h2 { color: #10B981 !important; }
 .kpi.amber h2 { color: #F59E0B !important; }
 .kpi.red h2 { color: #EF4444 !important; }
-
 .alr { background: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 8px 0; color: #991B1B; }
-
 .rcard { background: white; border-radius: 12px; padding: 16px 20px; margin: 8px 0; border: 1px solid #E2E8F0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .rcard b { color: #1E293B; }
 .rcard code { background: #F1F5F9; padding: 2px 8px; border-radius: 4px; color: #0F172A; font-weight: 600; }
@@ -177,16 +203,13 @@ section[data-testid="stSidebar"] .stTextInput input { background: #334155 !impor
 .rcard.green { border-left: 4px solid #10B981; }
 .rcard.red { border-left: 4px solid #EF4444; }
 .rcard.gray { border-left: 4px solid #94A3B8; }
-
 .stTabs [data-baseweb="tab"] { font-weight: 600; }
 .stTabs [aria-selected="true"] { color: #F59E0B !important; border-bottom-color: #F59E0B !important; }
 </style>""", unsafe_allow_html=True)
 
 init()
-
 st.markdown('<div class="hdr"><h1>📦 Stock<span>Reserv</span></h1><p>Stock en temps réel · Réservations équipe · Mise à jour hebdo</p></div>', unsafe_allow_html=True)
 
-# === SIDEBAR ===
 with st.sidebar:
     st.markdown("## 🔐 Admin — Import")
     pwd=st.text_input("Mot de passe",type="password",key="pw")
@@ -201,31 +224,26 @@ with st.sidebar:
             else: st.error(msg)
     elif pwd:
         st.error("Mot de passe incorrect")
-
     st.divider()
     st.markdown("## 📖 Guide utilisateur")
-    st.markdown("""
-**🔍 Chercher un produit**  
-Onglet **Stock & Produits** → tape un article, un libellé, un VCD ou une marque dans la barre de recherche. Tu peux aussi filtrer par marque ou n'afficher que les produits en stock.
+    st.markdown("""**🔍 Chercher un produit**  
+Onglet **Stock & Produits** → tape un article, libellé, VCD ou marque. Filtre par marque ou stock disponible.
 
 **➕ Faire une réservation**  
-Onglet **Nouvelle réservation** → choisis un article, indique la quantité souhaitée et valide. Le stock disponible se met à jour automatiquement.
+Onglet **Nouvelle réservation** → choisis un article, quantité, valide.
 
-**📋 Règles de réservation**  
+**📋 Règles**  
 • Toujours indiquer ton **prénom**  
-• Préciser le **nom du client** dans le commentaire  
-• Une réservation = un devis ou une commande en cours  
-• Pense à passer la résa en ✅ **Consommé** quand c'est livré ou ❌ **Annuler** si le devis est perdu
-""")
+• **Nom du client** dans le commentaire  
+• ✅ Consommé quand livré · ❌ Annuler si devis perdu""")
 
-# === DATA ===
 prods = get_produits()
-alertes = [p for p in prods if p["dispo"] < 0]
+alertes = [p for p in prods if p["dispo"] and p["dispo"] < 0]
 for a in alertes:
-    st.markdown(f'<div class="alr">⚠️ <b>{a["article"]}</b> {a["libelle"][:40]} — stock insuffisant pour les réservations !</div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="alr">⚠️ <b>{a["article"]}</b> {str(a.get("libelle",""))[:40]} — stock insuffisant</div>',unsafe_allow_html=True)
 
-tr=len(prods); ts=sum(p["stock_brut"] for p in prods)
-tre=sum(p["reserve"] for p in prods); td=sum(max(p["dispo"],0) for p in prods)
+tr=len(prods); ts=sum(p.get("stock_brut",0) or 0 for p in prods)
+tre=sum(p.get("reserve",0) or 0 for p in prods); td=sum(max(p.get("dispo",0) or 0,0) for p in prods)
 
 c1,c2,c3,c4=st.columns(4)
 with c1: st.markdown(f'<div class="kpi blue"><h2>{tr}</h2><p>Références</p></div>',unsafe_allow_html=True)
@@ -236,45 +254,33 @@ with c4: st.markdown(f'<div class="kpi red"><h2>{td:,}</h2><p>Disponible</p></di
 st.markdown("")
 t1,t2,t3,t4=st.tabs(["📦 Stock & Produits","➕ Nouvelle réservation","📋 Réservations","👥 Par commercial"])
 
-# === STOCK ===
 with t1:
-    if not prods:
-        st.info("📂 Aucun produit. L'admin doit importer un fichier Excel.")
+    if not prods: st.info("📂 Aucun produit. L'admin doit importer un fichier Excel.")
     else:
         ca,cb,cc=st.columns([3,1,1])
-        with ca: se=st.text_input("🔍 Rechercher un article, libellé, VCD ou marque...",key="s")
+        with ca: se=st.text_input("🔍 Rechercher...",key="s")
         with cb:
-            mqs=sorted(set(p["marque"] for p in prods if p["marque"]))
+            mqs=sorted(set(str(p.get("marque","")) for p in prods if p.get("marque")))
             mf=st.selectbox("Marque",["Toutes"]+mqs,key="mf")
         with cc: od=st.checkbox("En stock uniquement",key="od")
-
         df=pd.DataFrame(prods)
         if se:
             s=se.lower()
             df=df[df["article"].astype(str).str.lower().str.contains(s,na=False)|df["libelle"].astype(str).str.lower().str.contains(s,na=False)|df["vcd"].astype(str).str.lower().str.contains(s,na=False)|df["marque"].astype(str).str.lower().str.contains(s,na=False)]
         if mf!="Toutes": df=df[df["marque"]==mf]
         if od: df=df[df["dispo"]>0]
-
         out=pd.DataFrame()
-        out["Article"]=df["article"]
-        out["Marque"]=df["marque"]
-        out["Libellé"]=df["libelle"]
+        out["Article"]=df["article"]; out["Marque"]=df["marque"]; out["Libellé"]=df["libelle"]
         out["Écran"]=df["affichage"].apply(lambda x: f'{int(sf(x))}"' if sf(x)>0 else "")
-        out["Processeur"]=df["processeur"]
-        out["RAM"]=df["memoire"]
-        out["Stockage"]=df["stockage"]
-        out["Commandé"]=df["qte_commandee"]
-        out["Stock"]=df["stock_brut"]
-        out["Réservé"]=df["reserve"]
-        out["Disponible"]=df["dispo"]
-        out["PV Resah"]=df["pv_resah"].apply(lambda x: f"{x:.2f} €")
-        out["Marge %"]=df["tx_marge"].apply(lambda x: f"{x*100:.2f}%")
-        out["Marge €"]=df["marge_unitaire"].apply(lambda x: f"{x:.2f} €")
-
+        out["Processeur"]=df["processeur"]; out["RAM"]=df["memoire"]; out["Stockage"]=df["stockage"]
+        out["Commandé"]=df["qte_commandee"]; out["Stock"]=df["stock_brut"]
+        out["Réservé"]=df["reserve"]; out["Disponible"]=df["dispo"]
+        out["PV Resah"]=df["pv_resah"].apply(lambda x: f"{sf(x):.2f} €")
+        out["Marge %"]=df["tx_marge"].apply(lambda x: f"{sf(x)*100:.2f}%")
+        out["Marge €"]=df["marge_unitaire"].apply(lambda x: f"{sf(x):.2f} €")
         def row_color(row):
-            st_list=[""]*len(row)
-            idx=row.index.get_loc("Disponible")
-            d=row["Disponible"]; c=row["Commandé"]
+            st_list=[""]*len(row); idx=row.index.get_loc("Disponible")
+            d=row["Disponible"] or 0; c=row["Commandé"] or 0
             if c>0:
                 r=d/c
                 if r>0.5: st_list[idx]="background-color:#D1FAE5;color:#065F46;font-weight:700"
@@ -284,40 +290,36 @@ with t1:
                 if d>0: st_list[idx]="background-color:#D1FAE5;color:#065F46;font-weight:700"
                 else: st_list[idx]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
             return st_list
-
         st.dataframe(out.style.apply(row_color,axis=1),use_container_width=True,hide_index=True,height=550)
-        st.caption(f"{len(out)} article(s) affichés sur {tr}")
+        st.caption(f"{len(out)} article(s) sur {tr}")
 
-# === RESERVER ===
 with t2:
-    if not prods:
-        st.info("📂 Aucun produit chargé.")
+    if not prods: st.info("📂 Aucun produit chargé.")
     else:
         st.markdown("#### Réserver du stock pour un client")
         ca,cb=st.columns(2)
         with ca:
             nom=st.text_input("👤 Commercial",placeholder="Romain, Lisa...",key="rn")
             arts=[p["article"] for p in prods]
-            sel=st.selectbox("📦 Article",arts,format_func=lambda a:f"{a} — {next((p['libelle'][:50] for p in prods if p['article']==a),'')}", key="ra")
+            sel=st.selectbox("📦 Article",arts,format_func=lambda a:f"{a} — {next((str(p.get('libelle',''))[:50] for p in prods if p['article']==a),'')}", key="ra")
         with cb:
             pi=next((p for p in prods if p["article"]==sel),None)
             if pi:
-                d=max(pi["dispo"],0); c=pi["qte_commandee"]
+                d=max(pi.get("dispo",0) or 0,0); c=pi.get("qte_commandee",0) or 0
                 pct=f" ({d/c*100:.0f}%)" if c>0 else ""
-                col_dispo = "🟢" if (c>0 and d/c>0.5) or (c==0 and d>0) else ("🟡" if d>0 else "🔴")
-                st.markdown(f"""
-**{pi['libelle']}**
+                col_d="🟢" if (c>0 and d/c>0.5) or (c==0 and d>0) else ("🟡" if d>0 else "🔴")
+                st.markdown(f"""**{pi['libelle']}**
 
 | | |
 |---|---|
-| Marque | {pi['marque']} |
-| Écran | {int(sf(pi['affichage']))}" |
-| PV Resah | {pi['pv_resah']:.2f} € |
-| Marge | {pi['marge_unitaire']:.2f} € ({pi['tx_marge']*100:.2f}%) |
+| Marque | {pi.get('marque','')} |
+| Écran | {int(sf(pi.get('affichage',0)))}" |
+| PV Resah | {sf(pi.get('pv_resah',0)):.2f} € |
+| Marge | {sf(pi.get('marge_unitaire',0)):.2f} € ({sf(pi.get('tx_marge',0))*100:.2f}%) |
 | Commandé | {c} |
-| En stock | {pi['stock_brut']} |
-| Réservé | {pi['reserve']} |
-| {col_dispo} Disponible | **{d}**{pct} |
+| En stock | {pi.get('stock_brut',0)} |
+| Réservé | {pi.get('reserve',0)} |
+| {col_d} Disponible | **{d}**{pct} |
 """)
                 mx=d
             else: mx=0
@@ -325,94 +327,68 @@ with t2:
             dt=st.date_input("Date",value=date.today(),key="rd")
         com=st.text_area("💬 Commentaire",placeholder="Devis client X, PO en attente...",key="rc")
         if st.button("✅ Confirmer la réservation",type="primary",use_container_width=True):
-            if not nom.strip():
-                st.error("Indique le nom du commercial")
+            if not nom.strip(): st.error("Indique le nom du commercial")
             else:
-                prod=q("SELECT * FROM produits WHERE article=?",(sel,),f="one")
-                res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",(sel,),f="one")
-                stock_d=prod["stock_brut"]-(res["t"] if res else 0)
-                if qty>stock_d:
-                    st.error(f"Stock insuffisant ! Disponible: {stock_d}")
+                prod=q("SELECT * FROM produits WHERE article=?",[sel],f="one")
+                res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[sel],f="one")
+                sd=(prod.get("stock_brut",0) or 0)-((res.get("t",0) or 0) if res else 0)
+                if qty>sd: st.error(f"Stock insuffisant ! Dispo: {sd}")
                 else:
-                    qx("INSERT INTO reservations(personne,article,quantite,commentaire,date_reservation) VALUES(?,?,?,?,?)",
-                      (nom.strip(),sel,qty,com.strip(),dt.isoformat()))
-                    st.success(f"✅ {qty}x {sel} réservé pour {nom.strip()}")
-                    st.rerun()
+                    qx("INSERT INTO reservations(personne,article,quantite,commentaire,date_reservation,statut) VALUES(?,?,?,?,?,'actif')",
+                      [nom.strip(),sel,qty,com.strip(),dt.isoformat()])
+                    st.success(f"✅ {qty}x {sel} réservé pour {nom.strip()}"); st.rerun()
 
-# === RESERVATIONS ===
 with t3:
     st.markdown("#### Suivi des réservations")
     fl=st.selectbox("Statut",["Tous","actif","annule","consomme"],key="fs",
         format_func=lambda x:{"Tous":"📊 Tous","actif":"🟢 Actives","annule":"❌ Annulées","consomme":"✅ Consommées"}.get(x,x))
     sp=None if fl=="Tous" else fl
     rs=get_reservations(sp)
-    if not rs:
-        st.info("Aucune réservation.")
+    if not rs: st.info("Aucune réservation.")
     else:
         for r in rs:
-            cls={"actif":"green","annule":"red","consomme":"gray"}.get(r["statut"],"")
-            em={"actif":"🟢","annule":"❌","consomme":"✅"}.get(r["statut"],"")
-            lb={"actif":"Active","annule":"Annulée","consomme":"Consommée"}.get(r["statut"],"")
-            st.markdown(f'<div class="rcard {cls}"><b>{em} {r["personne"]}</b> → {r["quantite"]}x <code>{r["article"]}</code> · {r.get("libelle","")}<br/><small>📅 {r["date_reservation"]} · {r.get("commentaire","") or "—"} · {lb}</small></div>',unsafe_allow_html=True)
-            if r["statut"]=="actif":
+            cls={"actif":"green","annule":"red","consomme":"gray"}.get(str(r.get("statut","")),"")
+            em={"actif":"🟢","annule":"❌","consomme":"✅"}.get(str(r.get("statut","")),"")
+            lb={"actif":"Active","annule":"Annulée","consomme":"Consommée"}.get(str(r.get("statut","")),"")
+            st.markdown(f'<div class="rcard {cls}"><b>{em} {r.get("personne","")}</b> → {r.get("quantite",0)}x <code>{r.get("article","")}</code> · {r.get("libelle","")}<br/><small>📅 {r.get("date_reservation","")} · {r.get("commentaire","") or "—"} · {lb}</small></div>',unsafe_allow_html=True)
+            if r.get("statut")=="actif":
                 b1,b2,_=st.columns([1,1,5])
                 with b1:
                     if st.button("✅ Consommé",key=f"c{r['id']}"):
-                        qx("UPDATE reservations SET statut='consomme' WHERE id=?",(r["id"],)); st.rerun()
+                        qx("UPDATE reservations SET statut='consomme' WHERE id=?",[r["id"]]); st.rerun()
                 with b2:
                     if st.button("❌ Annuler",key=f"a{r['id']}"):
-                        qx("UPDATE reservations SET statut='annule' WHERE id=?",(r["id"],)); st.rerun()
+                        qx("UPDATE reservations SET statut='annule' WHERE id=?",[r["id"]]); st.rerun()
         st.caption(f"{len(rs)} réservation(s)")
 
-# === PAR COMMERCIAL ===
 with t4:
     st.markdown("#### 👥 Réservations par commercial")
-    all_resa = get_reservations()
-    if not all_resa:
-        st.info("Aucune réservation enregistrée.")
+    all_resa=get_reservations()
+    if not all_resa: st.info("Aucune réservation.")
     else:
-        df_r = pd.DataFrame(all_resa)
-        actives = df_r[df_r["statut"]=="actif"]
-        consommees = df_r[df_r["statut"]=="consomme"]
-        annulees = df_r[df_r["statut"]=="annule"]
-
-        personnes = sorted(df_r["personne"].unique())
-        rows = []
+        df_r=pd.DataFrame(all_resa)
+        actives=df_r[df_r["statut"]=="actif"]; conso=df_r[df_r["statut"]=="consomme"]; annu=df_r[df_r["statut"]=="annule"]
+        personnes=sorted(df_r["personne"].unique())
+        rows=[]
         for p in personnes:
-            pa = actives[actives["personne"]==p]
-            pc = consommees[consommees["personne"]==p]
-            pan = annulees[annulees["personne"]==p]
-
-            montant_actif = 0
-            for _, r in pa.iterrows():
-                prod = next((pr for pr in prods if pr["article"]==r["article"]), None)
-                if prod: montant_actif += r["quantite"] * prod["pv_resah"]
-
-            montant_conso = 0
-            for _, r in pc.iterrows():
-                prod = next((pr for pr in prods if pr["article"]==r["article"]), None)
-                if prod: montant_conso += r["quantite"] * prod["pv_resah"]
-
-            rows.append({
-                "Commercial": p,
-                "Résas actives": len(pa),
-                "Qté réservée": int(pa["quantite"].sum()) if len(pa) else 0,
-                "Montant réservé": f"{montant_actif:,.2f} €",
-                "Consommées": len(pc),
-                "Qté consommée": int(pc["quantite"].sum()) if len(pc) else 0,
-                "Montant consommé": f"{montant_conso:,.2f} €",
-                "Annulées": len(pan),
-            })
-
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
+            pa=actives[actives["personne"]==p]; pc=conso[conso["personne"]==p]; pn=annu[annu["personne"]==p]
+            ma=mc=0
+            for _,r in pa.iterrows():
+                pr=next((x for x in prods if x["article"]==r["article"]),None)
+                if pr: ma+=r["quantite"]*(pr.get("pv_resah",0) or 0)
+            for _,r in pc.iterrows():
+                pr=next((x for x in prods if x["article"]==r["article"]),None)
+                if pr: mc+=r["quantite"]*(pr.get("pv_resah",0) or 0)
+            rows.append({"Commercial":p,"Résas actives":len(pa),"Qté réservée":int(pa["quantite"].sum()) if len(pa) else 0,
+                "Montant réservé":f"{ma:,.2f} €","Consommées":len(pc),"Qté consommée":int(pc["quantite"].sum()) if len(pc) else 0,
+                "Montant consommé":f"{mc:,.2f} €","Annulées":len(pn)})
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
         st.markdown("---")
-        com_sel = st.selectbox("Détail pour :", personnes, key="cs")
-        detail = df_r[df_r["personne"]==com_sel]
-        if len(detail):
-            for _, r in detail.iterrows():
-                em={"actif":"🟢","annule":"❌","consomme":"✅"}.get(r["statut"],"")
-                lb={"actif":"Active","annule":"Annulée","consomme":"Consommée"}.get(r["statut"],"")
-                prod = next((pr for pr in prods if pr["article"]==r["article"]), None)
-                pv = f" · {r['quantite'] * prod['pv_resah']:,.2f} € PV Resah" if prod else ""
-                st.markdown(f'{em} {r["quantite"]}x **{r["article"]}** · {r.get("libelle","")}{pv} · {lb} · _{r.get("commentaire","") or "—"}_')
+        csel=st.selectbox("Détail pour :",personnes,key="cs")
+        detail=df_r[df_r["personne"]==csel]
+        for _,r in detail.iterrows():
+            em={"actif":"🟢","annule":"❌","consomme":"✅"}.get(str(r.get("statut","")),"")
+            lb={"actif":"Active","annule":"Annulée","consomme":"Consommée"}.get(str(r.get("statut","")),"")
+            pr=next((x for x in prods if x["article"]==r["article"]),None)
+            pv=f" · {r['quantite']*(pr.get('pv_resah',0) or 0):,.2f} €" if pr else ""
+            st.markdown(f'{em} {r["quantite"]}x **{r["article"]}** · {r.get("libelle","")}{pv} · {lb} · _{r.get("commentaire","") or "—"}_')
