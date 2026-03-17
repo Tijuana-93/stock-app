@@ -250,16 +250,22 @@ t1,t2,t3,t4=st.tabs(["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciau
 with t1:
     if not prods:st.info("📂 Aucun produit. Admin → importer Excel.")
     else:
-        ca,cb,cc=st.columns([3,1,1])
+        ca,cb,cc,cd=st.columns([3,1,1,1])
         with ca:se=st.text_input("🔍 Rechercher...",key="s")
         with cb:
             mqs=sorted(set(str(p.get("marque","")) for p in prods if p.get("marque")))
             mf=st.selectbox("Marque",["Toutes"]+mqs,key="mf")
-        with cc:od=st.checkbox("En stock",key="od")
+        with cc:
+            ecrans=sorted(set(int(sf(p.get("affichage",0))) for p in prods if sf(p.get("affichage",0))>0))
+            ef=st.selectbox("Écran",["Tous"]+[f'{e}"' for e in ecrans],key="ef")
+        with cd:od=st.checkbox("En stock",key="od")
         df=pd.DataFrame(prods)
         if se:
             s=se.lower();df=df[df["article"].astype(str).str.lower().str.contains(s,na=False)|df["libelle"].astype(str).str.lower().str.contains(s,na=False)|df["vcd"].astype(str).str.lower().str.contains(s,na=False)|df["marque"].astype(str).str.lower().str.contains(s,na=False)|df["ref_fournisseur"].astype(str).str.lower().str.contains(s,na=False)]
         if mf!="Toutes":df=df[df["marque"]==mf]
+        if ef!="Tous":
+            ef_val=int(ef.replace('"',''))
+            df=df[df["affichage"].apply(lambda x:int(sf(x))==ef_val if sf(x)>0 else False)]
         if od:df=df[df["dispo"]>0]
         # Colonnes compactes pour 13"
         out=pd.DataFrame()
@@ -267,6 +273,7 @@ with t1:
         out["Réf Fourn."]=df["ref_fournisseur"]
         out["Libellé"]=df["libelle"]
         out["Marque"]=df["marque"]
+        out["Écran"]=df["affichage"].apply(lambda x:f'{int(sf(x))}"' if sf(x)>0 else "")
         out["Cdé"]=df["qte_commandee"]
         out["Stock"]=df["stock_brut"]
         out["Rés."]=df["reserve"]
@@ -307,7 +314,7 @@ with t2:
             if pi:
                 d=max(pi.get("dispo",0) or 0,0);c=pi.get("qte_commandee",0) or 0
                 mx=d
-            qty=st.number_input("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
+            qty=st.slider("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
             dt=st.date_input("Date",value=date.today(),key="rd")
         with cb:
             if pi:
