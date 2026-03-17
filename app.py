@@ -271,6 +271,7 @@ with t1:
         out["Stock"]=df["stock_brut"]
         out["Rés."]=df["reserve"]
         out["Dispo"]=df["dispo"]
+        out["PA €"]=df["prix_ha_scc"].apply(lambda x:f"{sf(x):.2f}")
         out["PV Resah"]=df["pv_resah"].apply(lambda x:f"{sf(x):.2f}")
         out["PV Client"]=df["pv_client"].apply(lambda x:f"{sf(x):.2f}")
         out["Marge €"]=df["marge_unitaire"].apply(lambda x:f"{sf(x):.2f}")
