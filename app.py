@@ -197,6 +197,9 @@ section[data-testid="stSidebar"] .stTextInput input{background:#334155!important
 .rcard b{color:#1E293B}.rcard code{background:#F1F5F9;padding:2px 6px;border-radius:4px;color:#0F172A;font-weight:600;font-size:.85em}
 .rcard small{color:#64748B}.rcard.green{border-left:4px solid #10B981}
 .rcard.red{border-left:4px solid #EF4444}.rcard.gray{border-left:4px solid #94A3B8}
+.bundle-banner{background:linear-gradient(135deg,#1E3A5F,#1E40AF);border:2px solid #60A5FA;border-radius:12px;padding:18px 20px;margin:12px 0;color:white;font-size:1em}
+.bundle-banner h3{margin:0 0 6px 0!important;color:#93C5FD!important;font-size:1.15em!important}
+.bundle-banner p{margin:4px 0;color:#DBEAFE}
 .stTabs [data-baseweb="tab"]{font-weight:600;font-size:.9em}
 .stTabs [aria-selected="true"]{color:#F59E0B!important;border-bottom-color:#F59E0B!important}
 </style>""",unsafe_allow_html=True)
@@ -268,7 +271,9 @@ with t1:
         out["Stock"]=df["stock_brut"]
         out["Rés."]=df["reserve"]
         out["Dispo"]=df["dispo"]
-        out["PV €"]=df["pv_resah"].apply(lambda x:f"{sf(x):.2f}")
+        out["PV Resah"]=df["pv_resah"].apply(lambda x:f"{sf(x):.2f}")
+        out["PV Client"]=df["pv_client"].apply(lambda x:f"{sf(x):.2f}")
+        out["Marge €"]=df["marge_unitaire"].apply(lambda x:f"{sf(x):.2f}")
         out["Marge %"]=df["tx_marge"].apply(lambda x:f"{sf(x)*100:.1f}%")
         def rc(row):
             sl=[""]*len(row);idx=row.index.get_loc("Dispo")
@@ -300,21 +305,44 @@ with t2:
                 d=max(pi.get("dispo",0) or 0,0);c=pi.get("qte_commandee",0) or 0
                 pct=f" ({d/c*100:.0f}%)" if c>0 else ""
                 cd="🟢" if (c>0 and d/c>0.5) or (c==0 and d>0) else ("🟡" if d>0 else "🔴")
-                is_bundle="🎒 **Sac à dos inclus auto**" if sel in BUNDLE_TRIGGERS else ""
                 st.markdown(f"""**{pi['libelle']}**
-{is_bundle}
 
 |  |  |
 |---|---|
 |PV Resah|{sf(pi.get('pv_resah',0)):.2f} €|
-|Marge|{sf(pi.get('marge_unitaire',0)):.2f} € ({sf(pi.get('tx_marge',0))*100:.1f}%)|
+|PV Client|{sf(pi.get('pv_client',0)):.2f} €|
+|Marge unitaire|{sf(pi.get('marge_unitaire',0)):.2f} € ({sf(pi.get('tx_marge',0))*100:.1f}%)|
 |Cdé / Stock / Rés.|{c} / {pi.get('stock_brut',0)} / {pi.get('reserve',0)}|
 |{cd} Dispo|**{d}**{pct}|""")
                 mx=d
             else:mx=0
+        # Bundle banner OUTSIDE the column, full width
+        if pi and sel in BUNDLE_TRIGGERS:
+            sac_art=BUNDLE_TRIGGERS[sel]
+            sac_prod=q("SELECT * FROM produits WHERE article=?",[sac_art],f="one")
+            sac_dispo=0
+            if sac_prod:
+                sac_res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[sac_art],f="one")
+                sac_dispo=(sac_prod.get("stock_brut",0) or 0)-((sac_res.get("t",0) or 0) if sac_res else 0)
+            st.markdown(f"""<div class="bundle-banner">
+<h3>🎒 SAC À DOS OBLIGATOIRE AVEC CE PRODUIT</h3>
+<p>La réf <b>{sel}</b> doit être vendue avec le sac à dos <b>{BUNDLE_LABEL}</b> (article {sac_art})</p>
+<p>📦 Stock sac à dos : <b>{sac_dispo}</b> disponible(s) — sera ajouté automatiquement à la réservation</p>
+</div>""",unsafe_allow_html=True)
             qty=st.number_input("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
             dt=st.date_input("Date",value=date.today(),key="rd")
         com=st.text_area("💬 Commentaire (nom client)",placeholder="Devis client X...",key="rc")
+        # Financial preview
+        if pi and qty>=1:
+            pv_r=sf(pi.get('pv_resah',0));pv_c=sf(pi.get('pv_client',0));mg=sf(pi.get('marge_unitaire',0))
+            tot_resah=qty*pv_r;tot_client=qty*pv_c;tot_marge=qty*mg
+            st.markdown(f"""<div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:16px;margin:8px 0">
+<b style="color:#065F46">💰 Valeur de cette réservation ({qty} unité{'s' if qty>1 else ''})</b><br/>
+<table style="width:100%;margin-top:8px;color:#1E293B">
+<tr><td>CA Resah</td><td style="text-align:right;font-weight:700">{tot_resah:,.2f} €</td></tr>
+<tr><td>CA Client final</td><td style="text-align:right;font-weight:700">{tot_client:,.2f} €</td></tr>
+<tr style="border-top:2px solid #86EFAC"><td><b>Marge globale potentielle</b></td><td style="text-align:right;font-weight:700;color:#059669;font-size:1.1em">{tot_marge:,.2f} €</td></tr>
+</table></div>""",unsafe_allow_html=True)
         if st.button("✅ Confirmer",type="primary",use_container_width=True):
             if not nom.strip():st.error("Nom requis")
             else:
@@ -332,7 +360,9 @@ with t3:
             cls={"actif":"green","annule":"red","consomme":"gray"}.get(str(r.get("statut","")),"")
             em={"actif":"🟢","annule":"❌","consomme":"✅"}.get(str(r.get("statut","")),"")
             lb={"actif":"Active","annule":"Annulée","consomme":"Consommée"}.get(str(r.get("statut","")),"")
-            st.markdown(f'<div class="rcard {cls}"><b>{em} {r.get("personne","")}</b> → {r.get("quantite",0)}x <code>{r.get("article","")}</code> · {str(r.get("libelle",""))[:40]}<br/><small>📅 {r.get("date_reservation","")} · {r.get("commentaire","") or "—"} · {lb}</small></div>',unsafe_allow_html=True)
+            pr=next((x for x in prods if x["article"]==r.get("article","")),None)
+            pv_tot=f" · <b>{r.get('quantite',0)*sf(pr.get('pv_client',0)):,.2f} € CA</b> · marge {r.get('quantite',0)*sf(pr.get('marge_unitaire',0)):,.2f} €" if pr else ""
+            st.markdown(f'<div class="rcard {cls}"><b>{em} {r.get("personne","")}</b> → {r.get("quantite",0)}x <code>{r.get("article","")}</code> · {str(r.get("libelle",""))[:40]}{pv_tot}<br/><small>📅 {r.get("date_reservation","")} · {r.get("commentaire","") or "—"} · {lb}</small></div>',unsafe_allow_html=True)
             if r.get("statut")=="actif":
                 b1,b2,_=st.columns([1,1,5])
                 with b1:
@@ -350,14 +380,14 @@ with t4:
         pers=sorted(df_r["personne"].unique());rows=[]
         for p in pers:
             pa=act[act["personne"]==p];pc=con[con["personne"]==p];pn=ann[ann["personne"]==p]
-            ma=mc=0
+            ma=mc=mma=mmc=0
             for _,r in pa.iterrows():
                 pr=next((x for x in prods if x["article"]==r["article"]),None)
-                if pr:ma+=r["quantite"]*(pr.get("pv_resah",0) or 0)
+                if pr:ma+=r["quantite"]*(pr.get("pv_resah",0) or 0);mma+=r["quantite"]*(pr.get("marge_unitaire",0) or 0)
             for _,r in pc.iterrows():
                 pr=next((x for x in prods if x["article"]==r["article"]),None)
-                if pr:mc+=r["quantite"]*(pr.get("pv_resah",0) or 0)
-            rows.append({"Commercial":p,"Actives":len(pa),"Qté":int(pa["quantite"].sum()) if len(pa) else 0,"€ réservé":f"{ma:,.0f}€","Conso.":len(pc),"€ conso.":f"{mc:,.0f}€","Annul.":len(pn)})
+                if pr:mc+=r["quantite"]*(pr.get("pv_resah",0) or 0);mmc+=r["quantite"]*(pr.get("marge_unitaire",0) or 0)
+            rows.append({"Commercial":p,"Actives":len(pa),"Qté":int(pa["quantite"].sum()) if len(pa) else 0,"CA rés.":f"{ma:,.0f}€","Marge rés.":f"{mma:,.0f}€","Conso.":len(pc),"CA conso.":f"{mc:,.0f}€","Marge conso.":f"{mmc:,.0f}€","Annul.":len(pn)})
         st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
         st.markdown("---")
         csel=st.selectbox("Détail:",pers,key="cs")
