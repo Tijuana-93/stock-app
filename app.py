@@ -295,13 +295,21 @@ with t2:
     if not prods:st.info("📂 Aucun produit.")
     else:
         st.markdown("#### Réserver du stock")
+        # Select article first
+        arts=[p["article"] for p in prods]
+        sel=st.selectbox("📦 Article",arts,format_func=lambda a:f"{a} — {next((str(p.get('libelle',''))[:40] for p in prods if p['article']==a),'')}", key="ra")
+        pi=next((p for p in prods if p["article"]==sel),None)
+        
         ca,cb=st.columns(2)
         with ca:
             nom=st.text_input("👤 Commercial",placeholder="Romain, Lisa...",key="rn")
-            arts=[p["article"] for p in prods]
-            sel=st.selectbox("📦 Article",arts,format_func=lambda a:f"{a} — {next((str(p.get('libelle',''))[:40] for p in prods if p['article']==a),'')}", key="ra")
+            mx=0
+            if pi:
+                d=max(pi.get("dispo",0) or 0,0);c=pi.get("qte_commandee",0) or 0
+                mx=d
+            qty=st.number_input("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
+            dt=st.date_input("Date",value=date.today(),key="rd")
         with cb:
-            pi=next((p for p in prods if p["article"]==sel),None)
             if pi:
                 d=max(pi.get("dispo",0) or 0,0);c=pi.get("qte_commandee",0) or 0
                 pct=f" ({d/c*100:.0f}%)" if c>0 else ""
@@ -315,9 +323,8 @@ with t2:
 |Marge unitaire|{sf(pi.get('marge_unitaire',0)):.2f} € ({sf(pi.get('tx_marge',0))*100:.1f}%)|
 |Cdé / Stock / Rés.|{c} / {pi.get('stock_brut',0)} / {pi.get('reserve',0)}|
 |{cd} Dispo|**{d}**{pct}|""")
-                mx=d
-            else:mx=0
-        # Bundle banner OUTSIDE the column, full width
+
+        # Bundle banner full width
         if pi and sel in BUNDLE_TRIGGERS:
             sac_art=BUNDLE_TRIGGERS[sel]
             sac_prod=q("SELECT * FROM produits WHERE article=?",[sac_art],f="one")
@@ -330,9 +337,9 @@ with t2:
 <p>La réf <b>{sel}</b> doit être vendue avec le sac à dos <b>{BUNDLE_LABEL}</b> (article {sac_art})</p>
 <p>📦 Stock sac à dos : <b>{sac_dispo}</b> disponible(s) — sera ajouté automatiquement à la réservation</p>
 </div>""",unsafe_allow_html=True)
-            qty=st.number_input("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
-            dt=st.date_input("Date",value=date.today(),key="rd")
+
         com=st.text_area("💬 Commentaire (nom client)",placeholder="Devis client X...",key="rc")
+
         # Financial preview
         if pi and qty>=1:
             pv_r=sf(pi.get('pv_resah',0));pv_c=sf(pi.get('pv_client',0));mg=sf(pi.get('marge_unitaire',0))
@@ -344,6 +351,7 @@ with t2:
 <tr><td>CA Client final</td><td style="text-align:right;font-weight:700">{tot_client:,.2f} €</td></tr>
 <tr style="border-top:2px solid #86EFAC"><td><b>Marge globale potentielle</b></td><td style="text-align:right;font-weight:700;color:#059669;font-size:1.1em">{tot_marge:,.2f} €</td></tr>
 </table></div>""",unsafe_allow_html=True)
+
         if st.button("✅ Confirmer",type="primary",use_container_width=True):
             if not nom.strip():st.error("Nom requis")
             else:
