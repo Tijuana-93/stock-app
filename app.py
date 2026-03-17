@@ -361,8 +361,21 @@ with t2:
 
 with t3:
     st.markdown("#### Réservations")
+    is_admin = pwd==IMPORT_PASSWORD
     fl=st.selectbox("Statut",["Tous","actif","annule","consomme"],key="fs",format_func=lambda x:{"Tous":"📊 Tous","actif":"🟢 Actives","annule":"❌ Annulées","consomme":"✅ Consommées"}.get(x,x))
     sp=None if fl=="Tous" else fl;rs=get_reservations(sp)
+    if is_admin and rs:
+        with st.expander("🔐 Admin — Purger des réservations"):
+            st.warning("⚠️ La suppression est définitive.")
+            pa,pb=st.columns(2)
+            with pa:
+                if st.button("🗑️ Supprimer toutes les annulées",key="purge_ann"):
+                    tr("DELETE FROM reservations WHERE statut='annule'");st.success("Annulées supprimées");st.rerun()
+            with pb:
+                if st.button("🗑️ Supprimer toutes les consommées",key="purge_con"):
+                    tr("DELETE FROM reservations WHERE statut='consomme'");st.success("Consommées supprimées");st.rerun()
+            if st.button("💣 Supprimer TOUTES les réservations",key="purge_all"):
+                tr("DELETE FROM reservations");st.success("Tout supprimé");st.rerun()
     if not rs:st.info("Aucune réservation.")
     else:
         for r in rs:
@@ -373,11 +386,17 @@ with t3:
             pv_tot=f" · <b>{r.get('quantite',0)*sf(pr.get('pv_client',0)):,.2f} € CA</b> · marge {r.get('quantite',0)*sf(pr.get('marge_unitaire',0)):,.2f} €" if pr else ""
             st.markdown(f'<div class="rcard {cls}"><b>{em} {r.get("personne","")}</b> → {r.get("quantite",0)}x <code>{r.get("article","")}</code> · {str(r.get("libelle",""))[:40]}{pv_tot}<br/><small>📅 {r.get("date_reservation","")} · {r.get("commentaire","") or "—"} · {lb}</small></div>',unsafe_allow_html=True)
             if r.get("statut")=="actif":
-                b1,b2,_=st.columns([1,1,5])
+                b1,b2,b3=st.columns([1,1,1,] if is_admin else [1,1,5])
                 with b1:
                     if st.button("✅",key=f"c{r['id']}"):tr("UPDATE reservations SET statut='consomme' WHERE id=?",[r["id"]]);st.rerun()
                 with b2:
                     if st.button("❌",key=f"a{r['id']}"):tr("UPDATE reservations SET statut='annule' WHERE id=?",[r["id"]]);st.rerun()
+                if is_admin:
+                    with b3:
+                        if st.button("🗑️",key=f"d{r['id']}"):tr("DELETE FROM reservations WHERE id=?",[r["id"]]);st.rerun()
+            elif is_admin:
+                if st.button("🗑️ Supprimer",key=f"d{r['id']}"):
+                    tr("DELETE FROM reservations WHERE id=?",[r["id"]]);st.rerun()
         st.caption(f"{len(rs)} réservation(s)")
 
 with t4:
