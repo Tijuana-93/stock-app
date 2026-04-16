@@ -91,17 +91,15 @@ def fcol(dfc,names):
 
 def read_excel_smart(uf):
     """Lit un Excel en détectant automatiquement la ligne d'en-tête."""
-    # Essayer header=0 d'abord
     df=pd.read_excel(uf,header=0)
     if "Article" in df.columns or fcol(df.columns,["Article"]): return df
-    # Sinon chercher la ligne contenant "Article"
     df_raw=pd.read_excel(uf,header=None)
     for i in range(min(10,len(df_raw))):
         row_vals=[str(v) for v in df_raw.iloc[i].tolist()]
         if any("Article" in v for v in row_vals):
-            uf.seek(0)  # Reset file pointer
+            uf.seek(0)
             return pd.read_excel(uf,header=i)
-    return df  # fallback
+    return df
 
 def do_import(uf,mode):
     df=read_excel_smart(uf); mp={}
@@ -124,18 +122,47 @@ def do_import(uf,mode):
     if not recs: return False,"Aucun produit."
 
     if mode=="hebdo":
+        # 1. Identifier les articles absents du fichier
+        excel_articles=set(r["article"] for r in recs)
+        db_rows=q("SELECT article FROM produits")
+        db_articles=set(row["article"] for row in db_rows) if db_rows else set()
+        to_delete=sorted(db_articles - excel_articles)
+
+        # 2. Vérifier les réservations actives avant suppression
+        deleted_with_resa=[]
+        for art in to_delete:
+            active=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[art],f="one")
+            qty_active=(active.get("t",0) or 0) if active else 0
+            if qty_active>0:
+                deleted_with_resa.append((art,qty_active))
+            tr("DELETE FROM produits WHERE article=?",[art])
+
+        # 3. MAJ stock_brut UNIQUEMENT (préserve qte_commandee, prix, marges, etc.)
         u=n=0
         for r in recs:
             ex=q("SELECT 1 FROM produits WHERE article=?",[r["article"]],f="one")
             if ex:
-                # Hebdo = UNIQUEMENT stock actuel, on préserve qte_commandee et le reste
-                tr("UPDATE produits SET stock_brut=? WHERE article=?",[r["stock_brut"],r["article"]]); u+=1
-            else: _ins(r); n+=1
-        return True,f"✅ Hebdo: {u} stocks MAJ"+(f", {n} nouveaux" if n else "")
+                tr("UPDATE produits SET stock_brut=? WHERE article=?",[r["stock_brut"],r["article"]])
+                u+=1
+            else:
+                _ins(r)
+                n+=1
+
+        # 4. Message récap
+        parts=[f"✅ Hebdo: {u} stocks MAJ"]
+        if n>0: parts.append(f"{n} nouveau(x)")
+        msg=" · ".join(parts)
+        if to_delete:
+            msg+=f"\n\n🗑️ {len(to_delete)} article(s) supprimé(s) (absent(s) du fichier) :\n"
+            msg+="\n".join(f"• {art}" for art in to_delete)
+            if deleted_with_resa:
+                msg+=f"\n\n⚠️ ATTENTION — articles supprimés avec RÉSAS ACTIVES :\n"
+                msg+="\n".join(f"• {art} ({qty} unité(s) réservée(s))" for art,qty in deleted_with_resa)
+        return True,msg
     else:
         tr("DELETE FROM produits")
         for r in recs: _ins(r)
-        return True,f"✅ {len(recs)} produits importés"
+        return True,f"✅ {len(recs)} produits importés (reset complet)"
 
 def _ins(r):
     tr("INSERT OR REPLACE INTO produits(article,groupe,code_ic1,vcd,ref_fournisseur,libelle,marque,affichage,processeur,memoire,stockage,qte_commandee,stock_brut,prix_ha_scc,pv_resah,pv_client,tx_marge,marge_unitaire) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -152,7 +179,6 @@ def get_reservations(sfv=None):
     return q("SELECT r.*,p.libelle,p.marque FROM reservations r LEFT JOIN produits p ON r.article=p.article ORDER BY r.id DESC")
 
 def make_reservation(nom,art,qty,com,dt):
-    """Crée une résa + bundle auto si Dell."""
     prod=q("SELECT * FROM produits WHERE article=?",[art],f="one")
     if not prod: return False,"Article introuvable."
     res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[art],f="one")
@@ -160,7 +186,6 @@ def make_reservation(nom,art,qty,com,dt):
     if qty>sd: return False,f"Stock insuffisant! Dispo: {sd}"
     tr("INSERT INTO reservations(personne,article,quantite,commentaire,date_reservation,statut) VALUES(?,?,?,?,?,'actif')",[nom,art,qty,com,dt])
     msg=f"✅ {qty}x {art} pour {nom}"
-    # Bundle auto
     if art in BUNDLE_TRIGGERS:
         sac=BUNDLE_TRIGGERS[art]
         sac_prod=q("SELECT * FROM produits WHERE article=?",[sac],f="one")
@@ -210,22 +235,34 @@ st.markdown('<div class="hdr"><h1>📦 Stock<span>Reserv</span></h1><p>Stock · 
 with st.sidebar:
     st.markdown("## 🔐 Admin")
     pwd=st.text_input("Mot de passe",type="password",key="pw")
+
     if pwd==IMPORT_PASSWORD:
         st.success("Connecté")
-        up=st.file_uploader("Excel (.xlsx)",type=["xlsx","xls"],key="fu")
+        up=st.file_uploader("1️⃣ Dépose ton fichier Excel",type=["xlsx","xls"],key="fu")
+
         if up is not None:
-            st.markdown("**Choisis le mode d'import :**")
-            st.caption("🔄 **Hebdo stock seul** : MAJ du stock actuel uniquement. Préserve qtés commandées, prix et modifs.")
-            st.caption("📥 **Tout charger** : écrase tout le catalogue (premier import / reset complet).")
-            if st.button("🔄 Hebdo stock seul",use_container_width=True,type="primary",key="btn_hebdo"):
-                ok,msg=do_import(up,"hebdo")
+            st.markdown("---")
+            st.markdown("### 2️⃣ Choisis le mode")
+
+            if st.button("🔄 Hebdo — stock actuel seul",type="primary",use_container_width=True,key="btn_hebdo"):
+                with st.spinner("Import hebdo en cours…"):
+                    ok,msg=do_import(up,"hebdo")
                 if ok: st.success(msg)
                 else: st.error(msg)
-            if st.button("📥 Tout charger",use_container_width=True,key="btn_full"):
-                ok,msg=do_import(up,"premier")
+            st.caption("↑ MAJ uniquement du stock actuel. Qtés commandées, prix et modifs manuelles préservés. Articles absents du fichier = supprimés (notifiés).")
+
+            st.markdown("")
+
+            if st.button("📥 Tout charger (reset complet)",use_container_width=True,key="btn_full"):
+                with st.spinner("Reset et import complet en cours…"):
+                    ok,msg=do_import(up,"premier")
                 if ok: st.success(msg)
                 else: st.error(msg)
-    elif pwd: st.error("Mot de passe incorrect")
+            st.caption("↑ Écrase TOUT le catalogue. Premier import ou remise à zéro.")
+
+    elif pwd:
+        st.error("Mot de passe incorrect")
+
     st.divider()
     st.markdown("## 📖 Guide")
     st.markdown("""**🔍 Chercher** → onglet Stock, tape article/libellé/marque
@@ -271,7 +308,6 @@ with t1:
             ef_val=int(ef.replace('"',''))
             df=df[df["affichage"].apply(lambda x:int(sf(x))==ef_val if sf(x)>0 else False)]
         if od:df=df[df["dispo"]>0]
-        # Colonnes compactes pour 13"
         out=pd.DataFrame()
         out["Article"]=df["article"]
         out["Réf Fourn."]=df["ref_fournisseur"]
@@ -306,11 +342,10 @@ with t2:
     if not prods:st.info("📂 Aucun produit.")
     else:
         st.markdown("#### Réserver du stock")
-        # Select article first
         arts=[p["article"] for p in prods]
         sel=st.selectbox("📦 Article",arts,format_func=lambda a:f"{a} — {next((str(p.get('libelle',''))[:40] for p in prods if p['article']==a),'')}", key="ra")
         pi=next((p for p in prods if p["article"]==sel),None)
-        
+
         ca,cb=st.columns(2)
         with ca:
             nom=st.text_input("👤 Commercial",placeholder="Romain, Lisa...",key="rn")
@@ -335,7 +370,6 @@ with t2:
 |Cdé / Stock / Rés.|{c} / {pi.get('stock_brut',0)} / {pi.get('reserve',0)}|
 |{cd} Dispo|**{d}**{pct}|""")
 
-        # Bundle banner full width
         if pi and sel in BUNDLE_TRIGGERS:
             sac_art=BUNDLE_TRIGGERS[sel]
             sac_prod=q("SELECT * FROM produits WHERE article=?",[sac_art],f="one")
@@ -351,7 +385,6 @@ with t2:
 
         com=st.text_area("💬 Commentaire (nom client)",placeholder="Devis client X...",key="rc")
 
-        # Financial preview
         if pi and qty>=1:
             pv_r=sf(pi.get('pv_resah',0));pv_c=sf(pi.get('pv_client',0));mg=sf(pi.get('marge_unitaire',0))
             tot_resah=qty*pv_r;tot_client=qty*pv_c;tot_marge=qty*mg
