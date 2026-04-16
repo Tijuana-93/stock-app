@@ -128,8 +128,8 @@ def do_import(uf,mode):
         for r in recs:
             ex=q("SELECT 1 FROM produits WHERE article=?",[r["article"]],f="one")
             if ex:
-                # Hebdo = UNIQUEMENT stock + qte commandee
-                tr("UPDATE produits SET stock_brut=?,qte_commandee=? WHERE article=?",[r["stock_brut"],r.get("qte_commandee",0),r["article"]]); u+=1
+                # Hebdo = UNIQUEMENT stock actuel, on préserve qte_commandee et le reste
+                tr("UPDATE produits SET stock_brut=? WHERE article=?",[r["stock_brut"],r["article"]]); u+=1
             else: _ins(r); n+=1
         return True,f"✅ Hebdo: {u} stocks MAJ"+(f", {n} nouveaux" if n else "")
     else:
@@ -212,15 +212,21 @@ with st.sidebar:
     pwd=st.text_input("Mot de passe",type="password",key="pw")
     if pwd==IMPORT_PASSWORD:
         st.success("Connecté")
-        mode=st.radio("Mode:",["📥 Tout charger","🔄 Hebdo (stock seul)"],key="im")
-        md="premier" if "Tout" in mode else "hebdo"
-        if md=="hebdo":
-            st.caption("⚡ Seules les quantités seront mises à jour. Tes prix et modifications manuelles sont préservés.")
         up=st.file_uploader("Excel (.xlsx)",type=["xlsx","xls"],key="fu")
         if up:
-            ok,msg=do_import(up,md)
-            if ok: st.success(msg)
-            else: st.error(msg)
+            st.caption("🔄 **Hebdo stock seul** : met à jour uniquement le stock actuel. Préserve qtés commandées, prix et modifs manuelles.")
+            st.caption("📥 **Tout charger** : écrase tout le catalogue (premier import ou reset complet).")
+            cb1,cb2=st.columns(2)
+            with cb1:
+                if st.button("🔄 Hebdo stock seul",use_container_width=True,type="primary",key="btn_hebdo"):
+                    ok,msg=do_import(up,"hebdo")
+                    if ok: st.success(msg)
+                    else: st.error(msg)
+            with cb2:
+                if st.button("📥 Tout charger",use_container_width=True,key="btn_full"):
+                    ok,msg=do_import(up,"premier")
+                    if ok: st.success(msg)
+                    else: st.error(msg)
     elif pwd: st.error("Mot de passe incorrect")
     st.divider()
     st.markdown("## 📖 Guide")
