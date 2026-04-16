@@ -213,20 +213,18 @@ with st.sidebar:
     if pwd==IMPORT_PASSWORD:
         st.success("Connecté")
         up=st.file_uploader("Excel (.xlsx)",type=["xlsx","xls"],key="fu")
-        if up:
-            st.caption("🔄 **Hebdo stock seul** : met à jour uniquement le stock actuel. Préserve qtés commandées, prix et modifs manuelles.")
-            st.caption("📥 **Tout charger** : écrase tout le catalogue (premier import ou reset complet).")
-            cb1,cb2=st.columns(2)
-            with cb1:
-                if st.button("🔄 Hebdo stock seul",use_container_width=True,type="primary",key="btn_hebdo"):
-                    ok,msg=do_import(up,"hebdo")
-                    if ok: st.success(msg)
-                    else: st.error(msg)
-            with cb2:
-                if st.button("📥 Tout charger",use_container_width=True,key="btn_full"):
-                    ok,msg=do_import(up,"premier")
-                    if ok: st.success(msg)
-                    else: st.error(msg)
+        if up is not None:
+            st.markdown("**Choisis le mode d'import :**")
+            st.caption("🔄 **Hebdo stock seul** : MAJ du stock actuel uniquement. Préserve qtés commandées, prix et modifs.")
+            st.caption("📥 **Tout charger** : écrase tout le catalogue (premier import / reset complet).")
+            if st.button("🔄 Hebdo stock seul",use_container_width=True,type="primary",key="btn_hebdo"):
+                ok,msg=do_import(up,"hebdo")
+                if ok: st.success(msg)
+                else: st.error(msg)
+            if st.button("📥 Tout charger",use_container_width=True,key="btn_full"):
+                ok,msg=do_import(up,"premier")
+                if ok: st.success(msg)
+                else: st.error(msg)
     elif pwd: st.error("Mot de passe incorrect")
     st.divider()
     st.markdown("## 📖 Guide")
