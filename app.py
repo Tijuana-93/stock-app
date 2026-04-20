@@ -13,15 +13,15 @@ BUNDLE_LABEL = "460-BDSS/34000197947"  # ref fournisseur du sac
 
 COL = {
     "article":"Article","groupe":"Groupe","code_ic1":"Code IC1 Ventes","vcd":"VCD",
-    "ref_fournisseur":["Réf Fournisseur Principal","Ref Fournisseur Principal"],
-    "libelle":["Libelle Complet","Libellé Complet"],"marque":"Marque",
-    "affichage":"Affichage","processeur":"Processeur","memoire":["Mémoire","Memoire"],
-    "stockage":"Stockage","qte_commandee":["Qté Commandée Ligne","Qte Commandee Ligne"],
-    "stock_brut":["Qté Livr/Aff Ligne","Qte Livr/Aff Ligne"],
-    "prix_ha_scc":["Prix Unitaire HA SCC","Prix Unitaire"],
-    "pv_resah":"PV au Resah",
-    "pv_client":"PV Client(marge Resah incluse)","tx_marge":"Tx de marge",
-    "marge_unitaire":"Montant marge unitaire",
+    "ref_fournisseur":["Réf Fournisseur Principal","Ref Fournisseur Principal","Réf Fourn."],
+    "libelle":["Libelle Complet","Libellé Complet","Libellé"],"marque":"Marque",
+    "affichage":["Affichage","Écran"],"processeur":"Processeur","memoire":["Mémoire","Memoire"],
+    "stockage":"Stockage","qte_commandee":["Qté Commandée Ligne","Qte Commandee Ligne","Cdé"],
+    "stock_brut":["Qté Livr/Aff Ligne","Qte Livr/Aff Ligne","Stock"],
+    "prix_ha_scc":["Prix Unitaire HA SCC","Prix Unitaire","PA €"],
+    "pv_resah":["PV au Resah","PV Resah"],
+    "pv_client":["PV Client(marge Resah incluse)","PV Client"],"tx_marge":["Tx de marge","Marge %"],
+    "marge_unitaire":["Montant marge unitaire","Marge €"],
 }
 REQUIRED_COLUMNS = ["article","libelle","stock_brut"]
 
