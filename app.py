@@ -349,11 +349,15 @@ with t2:
         ca,cb=st.columns(2)
         with ca:
             nom=st.text_input("👤 Commercial",placeholder="Romain, Lisa...",key="rn")
-            mx=0
-            if pi:
-                d=max(pi.get("dispo",0) or 0,0);c=pi.get("qte_commandee",0) or 0
-                mx=d
-            qty=st.slider("Quantité",min_value=1,max_value=max(mx,1),value=1,key="rq")
+            mx=max(pi.get("dispo",0) or 0,0) if pi else 0
+            if mx>=2:
+                qty=st.slider("Quantité",min_value=1,max_value=mx,value=1,key="rq")
+            elif mx==1:
+                qty=1
+                st.info("📦 1 seul exemplaire disponible.")
+            else:
+                qty=0
+                st.warning("⛔ Rupture — aucun exemplaire disponible pour cette réf.")
             dt=st.date_input("Date",value=date.today(),key="rd")
         with cb:
             if pi:
@@ -397,7 +401,8 @@ with t2:
 </table></div>""",unsafe_allow_html=True)
 
         if st.button("✅ Confirmer",type="primary",use_container_width=True):
-            if not nom.strip():st.error("Nom requis")
+            if qty<1:st.error("Rien à réserver (stock épuisé).")
+            elif not nom.strip():st.error("Nom requis")
             else:
                 ok,msg=make_reservation(nom.strip(),sel,qty,com.strip(),dt.isoformat())
                 if ok:st.success(msg);st.rerun()
