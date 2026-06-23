@@ -486,7 +486,7 @@ if t5:
                 "prix_ha_scc":"PA €","pv_resah":"PV Resah","pv_client":"PV Client",
                 "marge_unitaire":"Marge €","tx_marge":"Marge %"
             })
-            df_ed["Écran"] = df_ed["Écran"].apply(ss)
+            df_ed["Écran"] = df_ed["Écran"].apply(lambda x: str(int(sf(x))) if sf(x) > 0 else "")
             df_ed["PA €"] = df_ed["PA €"].apply(sf)
             df_ed["PV Resah"] = df_ed["PV Resah"].apply(sf)
             df_ed["PV Client"] = df_ed["PV Client"].apply(sf)
