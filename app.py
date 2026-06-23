@@ -7,9 +7,8 @@ IMPORT_PASSWORD = "admin@123"
 TURSO_URL = st.secrets["TURSO_URL"].replace("libsql://","https://")
 TURSO_TOKEN = st.secrets["TURSO_TOKEN"]
 
-# Bundle: quand on réserve un DELL (210-BQGZ ou 210-BQPL), ajouter auto le sac à dos
-BUNDLE_TRIGGERS = {"V54368": "V54372", "V54364": "V54372"}  # article → sac à dos
-BUNDLE_LABEL = "460-BDSS/34000197947"  # ref fournisseur du sac
+BUNDLE_TRIGGERS = {"V54368": "V54372", "V54364": "V54372"}
+BUNDLE_LABEL = "460-BDSS/34000197947"
 
 COL = {
     "article":"Article","groupe":"Groupe","code_ic1":"Code IC1 Ventes","vcd":"VCD",
@@ -40,7 +39,6 @@ def ss(v):
     s=str(v).strip()
     return "" if s.lower() in ("nan","none","nat","") else s
 
-# === TURSO API ===
 def _h():
     return {"Authorization":f"Bearer {TURSO_TOKEN}","Content-Type":"application/json"}
 def _a(v):
@@ -81,7 +79,6 @@ def init():
     tr("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)")
     tr("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')")
 
-# === IMPORT — auto-detect header row ===
 def fcol(dfc,names):
     if isinstance(names,str): names=[names]
     for n in names:
@@ -90,7 +87,6 @@ def fcol(dfc,names):
     return None
 
 def read_excel_smart(uf):
-    """Lit un Excel en détectant automatiquement la ligne d'en-tête."""
     df=pd.read_excel(uf,header=0)
     if "Article" in df.columns or fcol(df.columns,["Article"]): return df
     df_raw=pd.read_excel(uf,header=None)
@@ -122,13 +118,10 @@ def do_import(uf,mode):
     if not recs: return False,"Aucun produit."
 
     if mode=="hebdo":
-        # 1. Identifier les articles absents du fichier
         excel_articles=set(r["article"] for r in recs)
         db_rows=q("SELECT article FROM produits")
         db_articles=set(row["article"] for row in db_rows) if db_rows else set()
         to_delete=sorted(db_articles - excel_articles)
-
-        # 2. Vérifier les réservations actives avant suppression
         deleted_with_resa=[]
         for art in to_delete:
             active=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[art],f="one")
@@ -136,8 +129,6 @@ def do_import(uf,mode):
             if qty_active>0:
                 deleted_with_resa.append((art,qty_active))
             tr("DELETE FROM produits WHERE article=?",[art])
-
-        # 3. MAJ stock_brut UNIQUEMENT (préserve qte_commandee, prix, marges, etc.)
         u=n=0
         for r in recs:
             ex=q("SELECT 1 FROM produits WHERE article=?",[r["article"]],f="one")
@@ -147,8 +138,6 @@ def do_import(uf,mode):
             else:
                 _ins(r)
                 n+=1
-
-        # 4. Message récap
         parts=[f"✅ Hebdo: {u} stocks MAJ"]
         if n>0: parts.append(f"{n} nouveau(x)")
         msg=" · ".join(parts)
@@ -235,8 +224,9 @@ st.markdown('<div class="hdr"><h1>📦 Stock<span>Reserv</span></h1><p>Stock · 
 with st.sidebar:
     st.markdown("## 🔐 Admin")
     pwd=st.text_input("Mot de passe",type="password",key="pw")
+    is_admin = pwd==IMPORT_PASSWORD
 
-    if pwd==IMPORT_PASSWORD:
+    if is_admin:
         st.success("Connecté")
         up=st.file_uploader("1️⃣ Dépose ton fichier Excel",type=["xlsx","xls"],key="fu")
 
@@ -286,7 +276,13 @@ with c3:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>Réservé</p></d
 with c4:st.markdown(f'<div class="kpi red"><h2>{td:,}</h2><p>Dispo</p></div>',unsafe_allow_html=True)
 
 st.markdown("")
-t1,t2,t3,t4=st.tabs(["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciaux"])
+
+tab_labels = ["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciaux"]
+if is_admin:
+    tab_labels.append("🔧 Catalogue")
+tabs = st.tabs(tab_labels)
+t1,t2,t3,t4 = tabs[0],tabs[1],tabs[2],tabs[3]
+t5 = tabs[4] if is_admin else None
 
 with t1:
     if not prods:st.info("📂 Aucun produit. Admin → importer Excel.")
@@ -410,7 +406,6 @@ with t2:
 
 with t3:
     st.markdown("#### Réservations")
-    is_admin = pwd==IMPORT_PASSWORD
     fl=st.selectbox("Statut",["Tous","actif","annule","consomme"],key="fs",format_func=lambda x:{"Tous":"📊 Tous","actif":"🟢 Actives","annule":"❌ Annulées","consomme":"✅ Consommées"}.get(x,x))
     sp=None if fl=="Tous" else fl;rs=get_reservations(sp)
     if is_admin and rs:
@@ -474,3 +469,95 @@ with t4:
             pr=next((x for x in prods if x["article"]==r["article"]),None)
             pv=f" · {r['quantite']*(pr.get('pv_resah',0) or 0):,.0f}€" if pr else ""
             st.markdown(f'{em} {r["quantite"]}x **{r["article"]}**{pv} · {lb} · _{r.get("commentaire","") or "—"}_')
+
+if t5:
+    with t5:
+        st.markdown("#### Édition catalogue — champs manuels")
+        st.caption("Modifie Libellé, Écran, PA € et PV Resah. PV Client, Marge € et Marge % sont recalculés automatiquement à la sauvegarde.")
+
+        prods_edit = get_produits()
+        if not prods_edit:
+            st.info("Aucun produit dans le catalogue.")
+        else:
+            df_edit = pd.DataFrame(prods_edit)
+            df_ed = df_edit[["article","libelle","affichage","prix_ha_scc","pv_resah","pv_client","marge_unitaire","tx_marge"]].copy()
+            df_ed = df_ed.rename(columns={
+                "article":"Article","libelle":"Libellé","affichage":"Écran",
+                "prix_ha_scc":"PA €","pv_resah":"PV Resah","pv_client":"PV Client",
+                "marge_unitaire":"Marge €","tx_marge":"Marge %"
+            })
+            df_ed["Écran"] = df_ed["Écran"].apply(ss)
+            df_ed["PA €"] = df_ed["PA €"].apply(sf)
+            df_ed["PV Resah"] = df_ed["PV Resah"].apply(sf)
+            df_ed["PV Client"] = df_ed["PV Client"].apply(sf)
+            df_ed["Marge €"] = df_ed["Marge €"].apply(sf)
+            df_ed["Marge %"] = df_ed["Marge %"].apply(sf)
+
+            edited = st.data_editor(
+                df_ed,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Article":   st.column_config.TextColumn("Article", disabled=True, width="small"),
+                    "Libellé":   st.column_config.TextColumn("Libellé", width="large"),
+                    "Écran":     st.column_config.TextColumn('Écran (")', width="small"),
+                    "PA €":      st.column_config.NumberColumn("PA €", format="%.2f", step=0.01, width="small"),
+                    "PV Resah":  st.column_config.NumberColumn("PV Resah", format="%.2f", step=0.01, width="small"),
+                    "PV Client": st.column_config.NumberColumn("PV Client", format="%.2f", disabled=True, width="small"),
+                    "Marge €":   st.column_config.NumberColumn("Marge €", format="%.2f", disabled=True, width="small"),
+                    "Marge %":   st.column_config.NumberColumn("Marge %", format="%.2f %%", disabled=True, width="small"),
+                },
+                key="catalogue_editor"
+            )
+
+            # Recalcul auto : marge sur PV Resah (hors markup 5% client)
+            # PV Client = PV Resah x 1,05
+            # Marge € = PV Resah - PA €
+            # Marge % = (PV Resah - PA €) / PV Resah  → stocké en décimal (0.125 = 12,5%)
+            edited["PV Client"] = edited.apply(
+                lambda r: round(sf(r["PV Resah"]) * 1.05, 2), axis=1
+            )
+            edited["Marge €"] = edited.apply(
+                lambda r: round(sf(r["PV Resah"]) - sf(r["PA €"]), 2), axis=1
+            )
+            edited["Marge %"] = edited.apply(
+                lambda r: round((sf(r["PV Resah"]) - sf(r["PA €"])) / sf(r["PV Resah"]), 4)
+                          if sf(r["PV Resah"]) > 0 else 0.0, axis=1
+            )
+
+            st.markdown("")
+            col_save, col_info = st.columns([1, 3])
+            with col_save:
+                if st.button("💾 Sauvegarder", type="primary", use_container_width=True):
+                    errors = []
+                    saved = 0
+                    for _, row in edited.iterrows():
+                        art = row["Article"]
+                        try:
+                            tr(
+                                """UPDATE produits SET
+                                    libelle=?, affichage=?, prix_ha_scc=?,
+                                    pv_resah=?, pv_client=?, marge_unitaire=?, tx_marge=?
+                                WHERE article=?""",
+                                [
+                                    ss(row["Libellé"]),
+                                    ss(row["Écran"]),
+                                    sf(row["PA €"]),
+                                    sf(row["PV Resah"]),
+                                    sf(row["PV Client"]),
+                                    sf(row["Marge €"]),
+                                    sf(row["Marge %"]),
+                                    art,
+                                ]
+                            )
+                            saved += 1
+                        except Exception as e:
+                            errors.append(f"{art}: {e}")
+                    if errors:
+                        st.error(f"{len(errors)} erreur(s) :\n" + "\n".join(errors))
+                    else:
+                        st.success(f"✅ {saved} article(s) mis à jour.")
+                        st.rerun()
+            with col_info:
+                st.caption("ℹ️ PV Client = PV Resah × 1,05 · Marge € = PV Resah − PA · Marge % = Marge € / PV Resah")
