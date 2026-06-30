@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import openpyxl
 import math, requests
 from datetime import date
 
@@ -83,6 +84,7 @@ def init():
     except Exception: pass
     try: tr("ALTER TABLE produits ADD COLUMN total_vendu INTEGER DEFAULT 0")
     except Exception: pass
+    tr("CREATE TABLE IF NOT EXISTS kpi_recap(cle TEXT PRIMARY KEY,valeur REAL DEFAULT 0)")
     tr("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')")
 
 def fcol(dfc,names):
@@ -103,7 +105,36 @@ def read_excel_smart(uf):
             return pd.read_excel(uf,header=i)
     return df
 
+def read_kpi_recap(uf):
+    try:
+        uf.seek(0)
+        wb=openpyxl.load_workbook(uf,data_only=True)
+        ws=wb["Feuil1"] if "Feuil1" in wb.sheetnames else wb.worksheets[0]
+        labels={"quantité pc initiale":"qty_pc_initiale","total pc dispo":"total_pc_dispo","total pc vendus":"total_pc_vendus"}
+        found={}
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value,str):
+                    key=labels.get(c.value.strip().lower())
+                    if key:
+                        below=ws.cell(row=c.row+1,column=c.column).value
+                        if isinstance(below,(int,float)): found[key]=float(below)
+        return found
+    except Exception:
+        return {}
+
+def save_kpi_recap(found):
+    for k,v in found.items():
+        tr("INSERT OR REPLACE INTO kpi_recap(cle,valeur) VALUES(?,?)",[k,v])
+
+def get_kpi_recap():
+    rows=q("SELECT cle,valeur FROM kpi_recap")
+    return {r["cle"]:r["valeur"] for r in rows} if rows else {}
+
 def do_import(uf,mode):
+    kpi_found=read_kpi_recap(uf)
+    if kpi_found: save_kpi_recap(kpi_found)
+    uf.seek(0)
     df=read_excel_smart(uf); mp={}
     for k,v in COL.items():
         f=fcol(df.columns,v if isinstance(v,list) else [v])
@@ -267,21 +298,24 @@ for a in [p for p in prods if (p.get("dispo") or 0)<0]:
     st.markdown(f'<div class="alr">⚠️ <b>{a["article"]}</b> {str(a.get("libelle",""))[:30]} — stock insuffisant</div>',unsafe_allow_html=True)
 
 prods_kpi=[p for p in prods if p.get("article","")!=SAC_REF]
-tr_n=len(prods);tr_n_kpi=len(prods_kpi);ts=sum(p.get("qte_commandee",0) or 0 for p in prods_kpi)
-tre=sum(p.get("reserve",0) or 0 for p in prods_kpi);td=sum(max(p.get("dispo",0) or 0,0) for p in prods_kpi)
-tv=sum(max(p.get("qte_vendues",0) or 0,0) for p in prods_kpi)
+kpi_ov=get_kpi_recap()
+tr_n=len(prods);tr_n_kpi=len(prods_kpi)
+ts=kpi_ov.get("qty_pc_initiale", sum(p.get("qte_commandee",0) or 0 for p in prods_kpi))
+td=kpi_ov.get("total_pc_dispo", sum(max(p.get("dispo",0) or 0,0) for p in prods_kpi))
+tv=-kpi_ov["total_pc_vendus"] if "total_pc_vendus" in kpi_ov else sum(max(p.get("qte_vendues",0) or 0,0) for p in prods_kpi)
+tre=sum(p.get("reserve",0) or 0 for p in prods_kpi)
 ca_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("pv_client",0)) for p in prods_kpi)
 mg_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("marge_unitaire",0)) for p in prods_kpi)
 c1,c2,c3,c4,c5=st.columns(5)
 with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n_kpi}</h2><p>📂 Réfs</p></div>',unsafe_allow_html=True)
-with c2:st.markdown(f'<div class="kpi blue"><h2>{ts:,}</h2><p>🛒 Achetées</p></div>',unsafe_allow_html=True)
-with c3:st.markdown(f'<div class="kpi amber"><h2>{tv:,}</h2><p>✅ Vendues</p></div>',unsafe_allow_html=True)
+with c2:st.markdown(f'<div class="kpi blue"><h2>{int(ts):,}</h2><p>🛒 Achetées</p></div>',unsafe_allow_html=True)
+with c3:st.markdown(f'<div class="kpi amber"><h2>{int(tv):,}</h2><p>✅ Vendues</p></div>',unsafe_allow_html=True)
 with c4:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>🔒 Réservé</p></div>',unsafe_allow_html=True)
-with c5:st.markdown(f'<div class="kpi green"><h2>{td:,}</h2><p>📦 Dispo</p></div>',unsafe_allow_html=True)
+with c5:st.markdown(f'<div class="kpi green"><h2>{int(td):,}</h2><p>📦 Dispo</p></div>',unsafe_allow_html=True)
 c6,c7=st.columns(2)
 with c6:st.markdown(f'<div class="kpi green"><h2>{ca_pot:,.0f} €</h2><p>💰 CA potentiel (dispo)</p></div>',unsafe_allow_html=True)
 with c7:st.markdown(f'<div class="kpi green"><h2>{mg_pot:,.0f} €</h2><p>📈 Marge potentielle (dispo)</p></div>',unsafe_allow_html=True)
-st.caption("ℹ️ Tous les KPI ci-dessus excluent le sac à dos seul (V54372). Le KPI Vendues reprend directement ta colonne source (clampée à 0, donc un réappro n'y est jamais compté en négatif) — il reflète ton fichier de la semaine en cours, pas un cumul historique.")
+st.caption("ℹ️ Achetées / Vendues / Dispo sont lus directement depuis le récap de ton fichier source (Quantité PC initiale / Total PC vendus / Total PC dispo en Feuil1) si présent, sinon recalculés automatiquement. Sac à dos (V54372) exclu de tous les KPI.")
 
 st.markdown("")
 
