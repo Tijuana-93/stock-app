@@ -78,6 +78,8 @@ def q(sql,p=None,f="all"):
 
 def init():
     tr("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,qte_vendues INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)")
+    try: tr("ALTER TABLE produits ADD COLUMN qte_vendues INTEGER DEFAULT 0")
+    except Exception: pass
     tr("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')")
 
 def fcol(dfc,names):
