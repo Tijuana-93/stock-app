@@ -323,7 +323,12 @@ with t1:
         out["Marque"]=df["marque"]
         out["Écran"]=df["affichage"].apply(lambda x:f'{int(sf(x))}"' if sf(x)>0 else "")
         out["Cdé"]=df["qte_commandee"]
-        out["Vendues"]=df["qte_vendues"]
+        def fmt_vendues(x):
+            v=si(x)
+            if v>0:return f"▲ {v}"
+            if v<0:return f"↻ {abs(v)}"
+            return "–"
+        out["Vendues"]=df["qte_vendues"].apply(fmt_vendues)
         out["Stock"]=df["stock_brut"]
         out["Rés."]=df["reserve"]
         out["Dispo"]=df["dispo"]
@@ -335,22 +340,23 @@ with t1:
         def rc(row):
             sl=[""]*len(row)
             idx_c=row.index.get_loc("Cdé");idx_v=row.index.get_loc("Vendues");idx_d=row.index.get_loc("Dispo")
-            sl[idx_c]="background-color:#EFF6FF;color:#1D4ED8;font-weight:700"
-            v=(row["Vendues"] or 0)
-            if v<0:sl[idx_v]="background-color:#EFF6FF;color:#1D4ED8;font-weight:700"
-            else:sl[idx_v]="background-color:#FFF7ED;color:#C2410C;font-weight:700"
+            sl[idx_c]="color:#475569;font-weight:600"
+            vtxt=str(row["Vendues"])
+            if vtxt.startswith("▲"):sl[idx_v]="color:#C2410C;font-weight:700"
+            elif vtxt.startswith("↻"):sl[idx_v]="color:#0369A1;font-weight:600"
+            else:sl[idx_v]="color:#94A3B8"
             d=(row["Dispo"] or 0);c=(row["Cdé"] or 0)
             if c>0:
                 r=d/c
-                if r>0.5:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700"
-                elif r>0:sl[idx_d]="background-color:#FEF3C7;color:#92400E;font-weight:700"
-                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
+                if r>0.5:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700;border-radius:6px"
+                elif r>0:sl[idx_d]="background-color:#FEF3C7;color:#92400E;font-weight:700;border-radius:6px"
+                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700;border-radius:6px"
             else:
-                if d>0:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700"
-                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
+                if d>0:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700;border-radius:6px"
+                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700;border-radius:6px"
             return sl
         st.dataframe(out.style.apply(rc,axis=1),use_container_width=True,hide_index=True,height=500)
-        st.caption(f"{len(out)} article(s) sur {tr_n} · une valeur négative en Vendues = réapprovisionnement (stock remonté au-dessus de la qté commandée), pas une vente")
+        st.caption(f"{len(out)} article(s) sur {tr_n} · ▲ vendu · ↻ réapprovisionné (stock remonté au-dessus de la qté commandée) · – aucun mouvement")
 
 with t2:
     if not prods:st.info("📂 Aucun produit.")
