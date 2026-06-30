@@ -7,8 +7,8 @@ IMPORT_PASSWORD = "admin@123"
 TURSO_URL = st.secrets["TURSO_URL"].replace("libsql://","https://")
 TURSO_TOKEN = st.secrets["TURSO_TOKEN"]
 
-BUNDLE_TRIGGERS = {"V54368": "V54372", "V54364": "V54372"}
-BUNDLE_LABEL = "460-BDSS/34000197947"
+BUNDLE_REFS = {"V54364","V54368"}
+
 
 COL = {
     "article":"Article","groupe":"Groupe","code_ic1":"Code IC1 Ventes","vcd":"VCD",
@@ -178,19 +178,6 @@ def make_reservation(nom,art,qty,com,dt):
     if qty>sd: return False,f"Stock insuffisant! Dispo: {sd}"
     tr("INSERT INTO reservations(personne,article,quantite,commentaire,date_reservation,statut) VALUES(?,?,?,?,?,'actif')",[nom,art,qty,com,dt])
     msg=f"✅ {qty}x {art} pour {nom}"
-    if art in BUNDLE_TRIGGERS:
-        sac=BUNDLE_TRIGGERS[art]
-        sac_prod=q("SELECT * FROM produits WHERE article=?",[sac],f="one")
-        if sac_prod:
-            sac_res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[sac],f="one")
-            sac_dispo=(sac_prod.get("stock_brut",0) or 0)-((sac_res.get("t",0) or 0) if sac_res else 0)
-            if qty<=sac_dispo:
-                tr("INSERT INTO reservations(personne,article,quantite,commentaire,date_reservation,statut) VALUES(?,?,?,?,?,'actif')",[nom,sac,qty,f"[AUTO] Sac à dos ajouté avec {art} — {com}",dt])
-                msg+=f"\n🎒 + {qty}x sac à dos ({BUNDLE_LABEL}) ajouté automatiquement"
-            else:
-                msg+=f"\n⚠️ Sac à dos ({BUNDLE_LABEL}): stock insuffisant ({sac_dispo} dispo)"
-        else:
-            msg+=f"\n⚠️ Sac à dos ({sac}) non trouvé dans le catalogue"
     return True,msg
 
 # === UI ===
@@ -261,7 +248,6 @@ with st.sidebar:
     st.markdown("""**🔍 Chercher** → onglet Stock, tape article/libellé/marque
 
 **➕ Réserver** → choisis article + quantité
-🎒 Les réfs Dell 210-BQGZ et 210-BQPL ajoutent auto le sac à dos
 
 **📋 Règles** : prénom + nom client dans commentaire
 ✅ Consommé quand livré · ❌ Annuler si perdu""")
@@ -270,13 +256,15 @@ prods=get_produits()
 for a in [p for p in prods if (p.get("dispo") or 0)<0]:
     st.markdown(f'<div class="alr">⚠️ <b>{a["article"]}</b> {str(a.get("libelle",""))[:30]} — stock insuffisant</div>',unsafe_allow_html=True)
 
-tr_n=len(prods);ts=sum(p.get("stock_brut",0) or 0 for p in prods)
+tr_n=len(prods);ts=sum(p.get("qte_commandee",0) or 0 for p in prods)
 tre=sum(p.get("reserve",0) or 0 for p in prods);td=sum(max(p.get("dispo",0) or 0,0) for p in prods)
-c1,c2,c3,c4=st.columns(4)
+tv=sum(p.get("qte_vendues",0) or 0 for p in prods)
+c1,c2,c3,c4,c5=st.columns(5)
 with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n}</h2><p>Réfs</p></div>',unsafe_allow_html=True)
-with c2:st.markdown(f'<div class="kpi green"><h2>{ts:,}</h2><p>Stock</p></div>',unsafe_allow_html=True)
-with c3:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>Réservé</p></div>',unsafe_allow_html=True)
-with c4:st.markdown(f'<div class="kpi red"><h2>{td:,}</h2><p>Dispo</p></div>',unsafe_allow_html=True)
+with c2:st.markdown(f'<div class="kpi blue"><h2>{ts:,}</h2><p>Achetées</p></div>',unsafe_allow_html=True)
+with c3:st.markdown(f'<div class="kpi amber"><h2>{tv:,}</h2><p>Vendues</p></div>',unsafe_allow_html=True)
+with c4:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>Réservé</p></div>',unsafe_allow_html=True)
+with c5:st.markdown(f'<div class="kpi green"><h2>{td:,}</h2><p>Dispo</p></div>',unsafe_allow_html=True)
 
 st.markdown("")
 
@@ -340,16 +328,19 @@ with t1:
         out["Marge €"]=df["marge_unitaire"].apply(lambda x:f"{sf(x):.2f}")
         out["Marge %"]=df["tx_marge"].apply(lambda x:f"{sf(x)*100:.1f}%")
         def rc(row):
-            sl=[""]*len(row);idx=row.index.get_loc("Dispo")
+            sl=[""]*len(row)
+            idx_c=row.index.get_loc("Cdé");idx_v=row.index.get_loc("Vendues");idx_d=row.index.get_loc("Dispo")
+            sl[idx_c]="background-color:#EFF6FF;color:#1D4ED8;font-weight:700"
+            sl[idx_v]="background-color:#FFF7ED;color:#C2410C;font-weight:700"
             d=(row["Dispo"] or 0);c=(row["Cdé"] or 0)
             if c>0:
                 r=d/c
-                if r>0.5:sl[idx]="background-color:#D1FAE5;color:#065F46;font-weight:700"
-                elif r>0:sl[idx]="background-color:#FEF3C7;color:#92400E;font-weight:700"
-                else:sl[idx]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
+                if r>0.5:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700"
+                elif r>0:sl[idx_d]="background-color:#FEF3C7;color:#92400E;font-weight:700"
+                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
             else:
-                if d>0:sl[idx]="background-color:#D1FAE5;color:#065F46;font-weight:700"
-                else:sl[idx]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
+                if d>0:sl[idx_d]="background-color:#D1FAE5;color:#065F46;font-weight:700"
+                else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
             return sl
         st.dataframe(out.style.apply(rc,axis=1),use_container_width=True,hide_index=True,height=500)
         st.caption(f"{len(out)} article(s) sur {tr_n}")
@@ -390,17 +381,11 @@ with t2:
 |Cdé / Stock / Rés.|{c} / {pi.get('stock_brut',0)} / {pi.get('reserve',0)}|
 |{cd} Dispo|**{d}**{pct}|""")
 
-        if pi and sel in BUNDLE_TRIGGERS:
-            sac_art=BUNDLE_TRIGGERS[sel]
-            sac_prod=q("SELECT * FROM produits WHERE article=?",[sac_art],f="one")
-            sac_dispo=0
-            if sac_prod:
-                sac_res=q("SELECT COALESCE(SUM(quantite),0) as t FROM reservations WHERE article=? AND statut='actif'",[sac_art],f="one")
-                sac_dispo=(sac_prod.get("stock_brut",0) or 0)-((sac_res.get("t",0) or 0) if sac_res else 0)
-            st.markdown(f"""<div class="bundle-banner">
-<h3>🎒 SAC À DOS OBLIGATOIRE AVEC CE PRODUIT</h3>
-<p>La réf <b>{sel}</b> doit être vendue avec le sac à dos <b>{BUNDLE_LABEL}</b> (article {sac_art})</p>
-<p>📦 Stock sac à dos : <b>{sac_dispo}</b> disponible(s) — sera ajouté automatiquement à la réservation</p>
+        if pi:
+            if pi.get("article","") in BUNDLE_REFS:
+                st.markdown(f"""<div class="bundle-banner">
+<h3>🎒 ARTICLE EN BUNDLE</h3>
+<p>Le sac à dos est déjà intégré à cette référence — le coût est compris dans le prix affiché.</p>
 </div>""",unsafe_allow_html=True)
 
         com=st.text_area("💬 Commentaire (nom client)",placeholder="Devis client X...",key="rc")
