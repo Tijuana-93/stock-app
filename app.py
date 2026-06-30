@@ -258,13 +258,18 @@ for a in [p for p in prods if (p.get("dispo") or 0)<0]:
 
 tr_n=len(prods);ts=sum(p.get("qte_commandee",0) or 0 for p in prods)
 tre=sum(p.get("reserve",0) or 0 for p in prods);td=sum(max(p.get("dispo",0) or 0,0) for p in prods)
-tv=sum(p.get("qte_vendues",0) or 0 for p in prods)
+tv=sum(max(p.get("qte_vendues",0) or 0,0) for p in prods)
+ca_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("pv_client",0)) for p in prods)
+mg_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("marge_unitaire",0)) for p in prods)
 c1,c2,c3,c4,c5=st.columns(5)
-with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n}</h2><p>Réfs</p></div>',unsafe_allow_html=True)
-with c2:st.markdown(f'<div class="kpi blue"><h2>{ts:,}</h2><p>Achetées</p></div>',unsafe_allow_html=True)
-with c3:st.markdown(f'<div class="kpi amber"><h2>{tv:,}</h2><p>Vendues</p></div>',unsafe_allow_html=True)
-with c4:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>Réservé</p></div>',unsafe_allow_html=True)
-with c5:st.markdown(f'<div class="kpi green"><h2>{td:,}</h2><p>Dispo</p></div>',unsafe_allow_html=True)
+with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n}</h2><p>📂 Réfs</p></div>',unsafe_allow_html=True)
+with c2:st.markdown(f'<div class="kpi blue"><h2>{ts:,}</h2><p>🛒 Achetées</p></div>',unsafe_allow_html=True)
+with c3:st.markdown(f'<div class="kpi amber"><h2>{tv:,}</h2><p>✅ Vendues</p></div>',unsafe_allow_html=True)
+with c4:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>🔒 Réservé</p></div>',unsafe_allow_html=True)
+with c5:st.markdown(f'<div class="kpi green"><h2>{td:,}</h2><p>📦 Dispo</p></div>',unsafe_allow_html=True)
+c6,c7=st.columns(2)
+with c6:st.markdown(f'<div class="kpi green"><h2>{ca_pot:,.0f} €</h2><p>💰 CA potentiel (dispo)</p></div>',unsafe_allow_html=True)
+with c7:st.markdown(f'<div class="kpi green"><h2>{mg_pot:,.0f} €</h2><p>📈 Marge potentielle (dispo)</p></div>',unsafe_allow_html=True)
 
 st.markdown("")
 
@@ -331,7 +336,9 @@ with t1:
             sl=[""]*len(row)
             idx_c=row.index.get_loc("Cdé");idx_v=row.index.get_loc("Vendues");idx_d=row.index.get_loc("Dispo")
             sl[idx_c]="background-color:#EFF6FF;color:#1D4ED8;font-weight:700"
-            sl[idx_v]="background-color:#FFF7ED;color:#C2410C;font-weight:700"
+            v=(row["Vendues"] or 0)
+            if v<0:sl[idx_v]="background-color:#EFF6FF;color:#1D4ED8;font-weight:700"
+            else:sl[idx_v]="background-color:#FFF7ED;color:#C2410C;font-weight:700"
             d=(row["Dispo"] or 0);c=(row["Cdé"] or 0)
             if c>0:
                 r=d/c
@@ -343,7 +350,7 @@ with t1:
                 else:sl[idx_d]="background-color:#FEE2E2;color:#991B1B;font-weight:700"
             return sl
         st.dataframe(out.style.apply(rc,axis=1),use_container_width=True,hide_index=True,height=500)
-        st.caption(f"{len(out)} article(s) sur {tr_n}")
+        st.caption(f"{len(out)} article(s) sur {tr_n} · une valeur négative en Vendues = réapprovisionnement (stock remonté au-dessus de la qté commandée), pas une vente")
 
 with t2:
     if not prods:st.info("📂 Aucun produit.")
