@@ -296,6 +296,19 @@ with t1:
             ecrans=sorted(set(int(sf(p.get("affichage",0))) for p in prods if sf(p.get("affichage",0))>0))
             ef=st.selectbox("Écran",["Tous"]+[f'{e}"' for e in ecrans],key="ef")
         with cd:od=st.checkbox("En stock",key="od")
+
+        with st.expander("🔎 Plus de filtres (processeur, mémoire, stockage)"):
+            f1,f2,f3=st.columns(3)
+            with f1:
+                procs=sorted(set(str(p.get("processeur","")) for p in prods if p.get("processeur")))
+                pf=st.selectbox("Processeur",["Tous"]+procs,key="pf")
+            with f2:
+                mems=sorted(set(str(p.get("memoire","")) for p in prods if p.get("memoire")))
+                memf=st.selectbox("Mémoire",["Toutes"]+mems,key="memf")
+            with f3:
+                stos=sorted(set(str(p.get("stockage","")) for p in prods if p.get("stockage")))
+                stf=st.selectbox("Stockage",["Tous"]+stos,key="stf")
+
         df=pd.DataFrame(prods)
         if se:
             s=se.lower();df=df[df["article"].astype(str).str.lower().str.contains(s,na=False)|df["libelle"].astype(str).str.lower().str.contains(s,na=False)|df["vcd"].astype(str).str.lower().str.contains(s,na=False)|df["marque"].astype(str).str.lower().str.contains(s,na=False)|df["ref_fournisseur"].astype(str).str.lower().str.contains(s,na=False)]
@@ -303,6 +316,9 @@ with t1:
         if ef!="Tous":
             ef_val=int(ef.replace('"',''))
             df=df[df["affichage"].apply(lambda x:int(sf(x))==ef_val if sf(x)>0 else False)]
+        if pf!="Tous":df=df[df["processeur"]==pf]
+        if memf!="Toutes":df=df[df["memoire"]==memf]
+        if stf!="Tous":df=df[df["stockage"]==stf]
         if od:df=df[df["dispo"]>0]
         out=pd.DataFrame()
         out["Article"]=df["article"]
@@ -511,10 +527,6 @@ if t5:
                 key="catalogue_editor"
             )
 
-            # Recalcul auto : marge sur PV Resah (hors markup 5% client)
-            # PV Client = PV Resah x 1,05
-            # Marge € = PV Resah - PA €
-            # Marge % = (PV Resah - PA €) / PV Resah  → stocké en décimal (0.125 = 12,5%)
             edited["PV Client"] = edited.apply(
                 lambda r: round(sf(r["PV Resah"]) * 1.05, 2), axis=1
             )
