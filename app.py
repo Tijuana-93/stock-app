@@ -8,6 +8,7 @@ TURSO_URL = st.secrets["TURSO_URL"].replace("libsql://","https://")
 TURSO_TOKEN = st.secrets["TURSO_TOKEN"]
 
 BUNDLE_REFS = {"V54364","V54368"}
+SAC_REF = "V54372"
 
 
 COL = {
@@ -77,8 +78,10 @@ def q(sql,p=None,f="all"):
     return None
 
 def init():
-    tr("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,qte_vendues INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)")
+    tr("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,qte_vendues INTEGER DEFAULT 0,total_vendu INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)")
     try: tr("ALTER TABLE produits ADD COLUMN qte_vendues INTEGER DEFAULT 0")
+    except Exception: pass
+    try: tr("ALTER TABLE produits ADD COLUMN total_vendu INTEGER DEFAULT 0")
     except Exception: pass
     tr("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')")
 
@@ -134,11 +137,16 @@ def do_import(uf,mode):
             tr("DELETE FROM produits WHERE article=?",[art])
         u=n=0
         for r in recs:
-            ex=q("SELECT 1 FROM produits WHERE article=?",[r["article"]],f="one")
+            ex=q("SELECT stock_brut,total_vendu FROM produits WHERE article=?",[r["article"]],f="one")
             if ex:
-                tr("UPDATE produits SET stock_brut=?,qte_vendues=? WHERE article=?",[r["stock_brut"],r.get("qte_vendues",0),r["article"]])
+                old_stock=ex.get("stock_brut",0) or 0
+                old_total=ex.get("total_vendu",0) or 0
+                delta=old_stock-r["stock_brut"]
+                new_total=old_total+delta if delta>0 else old_total
+                tr("UPDATE produits SET stock_brut=?,qte_commandee=?,qte_vendues=?,total_vendu=? WHERE article=?",[r["stock_brut"],r.get("qte_commandee",0),r.get("qte_vendues",0),new_total,r["article"]])
                 u+=1
             else:
+                r["total_vendu"]=max(r.get("qte_vendues",0) or 0,0)
                 _ins(r)
                 n+=1
         parts=[f"✅ Hebdo: {u} stocks MAJ"]
@@ -153,12 +161,14 @@ def do_import(uf,mode):
         return True,msg
     else:
         tr("DELETE FROM produits")
-        for r in recs: _ins(r)
+        for r in recs:
+            r["total_vendu"]=max(r.get("qte_vendues",0) or 0,0)
+            _ins(r)
         return True,f"✅ {len(recs)} produits importés (reset complet)"
 
 def _ins(r):
-    tr("INSERT OR REPLACE INTO produits(article,groupe,code_ic1,vcd,ref_fournisseur,libelle,marque,affichage,processeur,memoire,stockage,qte_commandee,qte_vendues,stock_brut,prix_ha_scc,pv_resah,pv_client,tx_marge,marge_unitaire) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    [r["article"],r.get("groupe",""),r.get("code_ic1",""),r.get("vcd",""),r.get("ref_fournisseur",""),r["libelle"],r.get("marque",""),r.get("affichage",""),r.get("processeur",""),r.get("memoire",""),r.get("stockage",""),r.get("qte_commandee",0),r.get("qte_vendues",0),r["stock_brut"],r.get("prix_ha_scc",0),r.get("pv_resah",0),r.get("pv_client",0),r.get("tx_marge",0),r.get("marge_unitaire",0)])
+    tr("INSERT OR REPLACE INTO produits(article,groupe,code_ic1,vcd,ref_fournisseur,libelle,marque,affichage,processeur,memoire,stockage,qte_commandee,qte_vendues,total_vendu,stock_brut,prix_ha_scc,pv_resah,pv_client,tx_marge,marge_unitaire) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    [r["article"],r.get("groupe",""),r.get("code_ic1",""),r.get("vcd",""),r.get("ref_fournisseur",""),r["libelle"],r.get("marque",""),r.get("affichage",""),r.get("processeur",""),r.get("memoire",""),r.get("stockage",""),r.get("qte_commandee",0),r.get("qte_vendues",0),r.get("total_vendu",0),r["stock_brut"],r.get("prix_ha_scc",0),r.get("pv_resah",0),r.get("pv_client",0),r.get("tx_marge",0),r.get("marge_unitaire",0)])
 
 def get_produits():
     return q("""SELECT p.*,
@@ -229,7 +239,7 @@ with st.sidebar:
                     ok,msg=do_import(up,"hebdo")
                 if ok: st.success(msg)
                 else: st.error(msg)
-            st.caption("↑ MAJ uniquement du stock actuel. Qtés commandées, prix et modifs manuelles préservés. Articles absents du fichier = supprimés (notifiés).")
+            st.caption("↑ MAJ du stock et de la qté commandée à partir du fichier. Prix et modifs manuelles du catalogue préservés. Articles absents du fichier = supprimés (notifiés).")
 
             st.markdown("")
 
@@ -256,13 +266,14 @@ prods=get_produits()
 for a in [p for p in prods if (p.get("dispo") or 0)<0]:
     st.markdown(f'<div class="alr">⚠️ <b>{a["article"]}</b> {str(a.get("libelle",""))[:30]} — stock insuffisant</div>',unsafe_allow_html=True)
 
-tr_n=len(prods);ts=sum(p.get("qte_commandee",0) or 0 for p in prods)
-tre=sum(p.get("reserve",0) or 0 for p in prods);td=sum(max(p.get("dispo",0) or 0,0) for p in prods)
-tv=sum(max(p.get("qte_vendues",0) or 0,0) for p in prods)
-ca_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("pv_client",0)) for p in prods)
-mg_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("marge_unitaire",0)) for p in prods)
+prods_kpi=[p for p in prods if p.get("article","")!=SAC_REF]
+tr_n=len(prods);tr_n_kpi=len(prods_kpi);ts=sum(p.get("qte_commandee",0) or 0 for p in prods_kpi)
+tre=sum(p.get("reserve",0) or 0 for p in prods_kpi);td=sum(max(p.get("dispo",0) or 0,0) for p in prods_kpi)
+tv=sum(max(p.get("qte_vendues",0) or 0,0) for p in prods_kpi)
+ca_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("pv_client",0)) for p in prods_kpi)
+mg_pot=sum(max(p.get("dispo",0) or 0,0)*sf(p.get("marge_unitaire",0)) for p in prods_kpi)
 c1,c2,c3,c4,c5=st.columns(5)
-with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n}</h2><p>📂 Réfs</p></div>',unsafe_allow_html=True)
+with c1:st.markdown(f'<div class="kpi blue"><h2>{tr_n_kpi}</h2><p>📂 Réfs</p></div>',unsafe_allow_html=True)
 with c2:st.markdown(f'<div class="kpi blue"><h2>{ts:,}</h2><p>🛒 Achetées</p></div>',unsafe_allow_html=True)
 with c3:st.markdown(f'<div class="kpi amber"><h2>{tv:,}</h2><p>✅ Vendues</p></div>',unsafe_allow_html=True)
 with c4:st.markdown(f'<div class="kpi amber"><h2>{tre:,}</h2><p>🔒 Réservé</p></div>',unsafe_allow_html=True)
@@ -270,6 +281,7 @@ with c5:st.markdown(f'<div class="kpi green"><h2>{td:,}</h2><p>📦 Dispo</p></d
 c6,c7=st.columns(2)
 with c6:st.markdown(f'<div class="kpi green"><h2>{ca_pot:,.0f} €</h2><p>💰 CA potentiel (dispo)</p></div>',unsafe_allow_html=True)
 with c7:st.markdown(f'<div class="kpi green"><h2>{mg_pot:,.0f} €</h2><p>📈 Marge potentielle (dispo)</p></div>',unsafe_allow_html=True)
+st.caption("ℹ️ Tous les KPI ci-dessus excluent le sac à dos seul (V54372). Le KPI Vendues reprend directement ta colonne source (clampée à 0, donc un réappro n'y est jamais compté en négatif) — il reflète ton fichier de la semaine en cours, pas un cumul historique.")
 
 st.markdown("")
 
