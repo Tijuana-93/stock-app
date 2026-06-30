@@ -78,6 +78,7 @@ def q(sql,p=None,f="all"):
 def init():
     tr("CREATE TABLE IF NOT EXISTS produits(article TEXT PRIMARY KEY,groupe TEXT DEFAULT '',code_ic1 TEXT DEFAULT '',vcd TEXT DEFAULT '',ref_fournisseur TEXT DEFAULT '',libelle TEXT DEFAULT '',marque TEXT DEFAULT '',affichage TEXT DEFAULT '',processeur TEXT DEFAULT '',memoire TEXT DEFAULT '',stockage TEXT DEFAULT '',qte_commandee INTEGER DEFAULT 0,stock_brut INTEGER DEFAULT 0,prix_ha_scc REAL DEFAULT 0,pv_resah REAL DEFAULT 0,pv_client REAL DEFAULT 0,tx_marge REAL DEFAULT 0,marge_unitaire REAL DEFAULT 0)")
     tr("CREATE TABLE IF NOT EXISTS reservations(id INTEGER PRIMARY KEY AUTOINCREMENT,personne TEXT NOT NULL,article TEXT NOT NULL,quantite INTEGER NOT NULL,commentaire TEXT DEFAULT '',date_reservation TEXT DEFAULT '',statut TEXT DEFAULT 'actif')")
+    tr("CREATE TABLE IF NOT EXISTS historique_stock(article TEXT NOT NULL,libelle TEXT DEFAULT '',marque TEXT DEFAULT '',stock_brut INTEGER DEFAULT 0,date_import TEXT NOT NULL,PRIMARY KEY(article,date_import))")
 
 def fcol(dfc,names):
     if isinstance(names,str): names=[names]
@@ -138,6 +139,11 @@ def do_import(uf,mode):
             else:
                 _ins(r)
                 n+=1
+        today_iso=date.today().isoformat()
+        for r in recs:
+            tr("INSERT OR REPLACE INTO historique_stock(article,libelle,marque,stock_brut,date_import) VALUES(?,?,?,?,?)",
+               [r["article"],r["libelle"],r.get("marque",""),r["stock_brut"],today_iso])
+
         parts=[f"✅ Hebdo: {u} stocks MAJ"]
         if n>0: parts.append(f"{n} nouveau(x)")
         msg=" · ".join(parts)
@@ -162,6 +168,20 @@ def get_produits():
         p.stock_brut-COALESCE((SELECT SUM(r.quantite) FROM reservations r WHERE r.article=p.article AND r.statut='actif'),0) AS dispo,
         COALESCE((SELECT SUM(r.quantite) FROM reservations r WHERE r.article=p.article AND r.statut='actif'),0) AS reserve
         FROM produits p ORDER BY p.marque,p.libelle""")
+
+def get_dates_import():
+    rows=q("SELECT DISTINCT date_import FROM historique_stock ORDER BY date_import DESC")
+    return [r["date_import"] for r in rows] if rows else []
+
+def get_ventes(date_recente,date_precedente):
+    rows=q("""SELECT a.article,a.libelle,a.marque,
+        b.stock_brut AS stock_avant,a.stock_brut AS stock_apres,
+        (b.stock_brut-a.stock_brut) AS vendu
+        FROM historique_stock a
+        JOIN historique_stock b ON a.article=b.article AND b.date_import=?
+        WHERE a.date_import=? AND (b.stock_brut-a.stock_brut)>0
+        ORDER BY vendu DESC""",[date_precedente,date_recente])
+    return rows if rows else []
 
 def get_reservations(sfv=None):
     if sfv: return q("SELECT r.*,p.libelle,p.marque FROM reservations r LEFT JOIN produits p ON r.article=p.article WHERE r.statut=? ORDER BY r.id DESC",[sfv])
@@ -277,12 +297,12 @@ with c4:st.markdown(f'<div class="kpi red"><h2>{td:,}</h2><p>Dispo</p></div>',un
 
 st.markdown("")
 
-tab_labels = ["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciaux"]
+tab_labels = ["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciaux","📊 Ventes"]
 if is_admin:
     tab_labels.append("🔧 Catalogue")
 tabs = st.tabs(tab_labels)
-t1,t2,t3,t4 = tabs[0],tabs[1],tabs[2],tabs[3]
-t5 = tabs[4] if is_admin else None
+t1,t2,t3,t4,t6 = tabs[0],tabs[1],tabs[2],tabs[3],tabs[4]
+t5 = tabs[5] if is_admin else None
 
 with t1:
     if not prods:st.info("📂 Aucun produit. Admin → importer Excel.")
@@ -485,6 +505,36 @@ with t4:
             pr=next((x for x in prods if x["article"]==r["article"]),None)
             pv=f" · {r['quantite']*(pr.get('pv_resah',0) or 0):,.0f}€" if pr else ""
             st.markdown(f'{em} {r["quantite"]}x **{r["article"]}**{pv} · {lb} · _{r.get("commentaire","") or "—"}_')
+
+with t6:
+    st.markdown("#### Ventes entre deux imports")
+    st.caption("Calcul = baisse du stock importé d'une semaine à l'autre (hors réservations).")
+    dates=get_dates_import()
+    if len(dates)<2:
+        st.info("📂 Il faut au moins 2 imports en mode Hebdo pour calculer des ventes.")
+    else:
+        cd1,cd2=st.columns(2)
+        with cd1:dr=st.selectbox("Import récent",dates,index=0,key="vd1")
+        with cd2:
+            dates_av=[d for d in dates if d<dr]
+            dp=st.selectbox("Import précédent",dates_av,index=0,key="vd2") if dates_av else None
+        if dp:
+            ventes=get_ventes(dr,dp)
+            if not ventes:
+                st.success("Aucune vente détectée entre ces deux imports.")
+            else:
+                dfv=pd.DataFrame(ventes)
+                outv=pd.DataFrame()
+                outv["Article"]=dfv["article"]
+                outv["Libellé"]=dfv["libelle"]
+                outv["Marque"]=dfv["marque"]
+                outv["Stock avant"]=dfv["stock_avant"]
+                outv["Stock après"]=dfv["stock_apres"]
+                outv["Vendu"]=dfv["vendu"]
+                st.dataframe(outv,use_container_width=True,hide_index=True,height=450)
+                st.caption(f"{int(dfv['vendu'].sum())} unité(s) vendue(s) sur {len(outv)} référence(s), entre le {dp} et le {dr}")
+        else:
+            st.info("Pas d'import antérieur disponible pour comparer.")
 
 if t5:
     with t5:
