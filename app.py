@@ -315,16 +315,12 @@ with c5:st.markdown(f'<div class="kpi green"><h2>{int(td):,}</h2><p>📦 Dispo</
 c6,c7=st.columns(2)
 with c6:st.markdown(f'<div class="kpi green"><h2>{ca_pot:,.0f} €</h2><p>💰 CA potentiel (dispo)</p></div>',unsafe_allow_html=True)
 with c7:st.markdown(f'<div class="kpi green"><h2>{mg_pot:,.0f} €</h2><p>📈 Marge potentielle (dispo)</p></div>',unsafe_allow_html=True)
-st.caption("ℹ️ Achetées / Vendues / Dispo sont lus directement depuis le récap de ton fichier source (Quantité PC initiale / Total PC vendus / Total PC dispo en Feuil1) si présent, sinon recalculés automatiquement. Sac à dos (V54372) exclu de tous les KPI.")
 
 st.markdown("")
 
 tab_labels = ["📦 Stock","➕ Réserver","📋 Résas","👥 Commerciaux"]
-if is_admin:
-    tab_labels.append("🔧 Catalogue")
 tabs = st.tabs(tab_labels)
 t1,t2,t3,t4 = tabs[0],tabs[1],tabs[2],tabs[3]
-t5 = tabs[4] if is_admin else None
 
 with t1:
     if not prods:st.info("📂 Aucun produit. Admin → importer Excel.")
@@ -534,90 +530,4 @@ with t4:
             pv=f" · {r['quantite']*(pr.get('pv_resah',0) or 0):,.0f}€" if pr else ""
             st.markdown(f'{em} {r["quantite"]}x **{r["article"]}**{pv} · {lb} · _{r.get("commentaire","") or "—"}_')
 
-if t5:
-    with t5:
-        st.markdown("#### Édition catalogue — champs manuels")
-        st.caption("Modifie Libellé, Écran, PA € et PV Resah. PV Client, Marge € et Marge % sont recalculés automatiquement à la sauvegarde.")
 
-        prods_edit = get_produits()
-        if not prods_edit:
-            st.info("Aucun produit dans le catalogue.")
-        else:
-            df_edit = pd.DataFrame(prods_edit)
-            df_ed = df_edit[["article","libelle","affichage","prix_ha_scc","pv_resah","pv_client","marge_unitaire","tx_marge"]].copy()
-            df_ed = df_ed.rename(columns={
-                "article":"Article","libelle":"Libellé","affichage":"Écran",
-                "prix_ha_scc":"PA €","pv_resah":"PV Resah","pv_client":"PV Client",
-                "marge_unitaire":"Marge €","tx_marge":"Marge %"
-            })
-            df_ed["Écran"] = df_ed["Écran"].apply(lambda x: str(int(sf(x))) if sf(x) > 0 else "")
-            df_ed["PA €"] = df_ed["PA €"].apply(sf)
-            df_ed["PV Resah"] = df_ed["PV Resah"].apply(sf)
-            df_ed["PV Client"] = df_ed["PV Client"].apply(sf)
-            df_ed["Marge €"] = df_ed["Marge €"].apply(sf)
-            df_ed["Marge %"] = df_ed["Marge %"].apply(sf)
-
-            edited = st.data_editor(
-                df_ed,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "Article":   st.column_config.TextColumn("Article", disabled=True, width="small"),
-                    "Libellé":   st.column_config.TextColumn("Libellé", width="large"),
-                    "Écran":     st.column_config.TextColumn('Écran (")', width="small"),
-                    "PA €":      st.column_config.NumberColumn("PA €", format="%.2f", step=0.01, width="small"),
-                    "PV Resah":  st.column_config.NumberColumn("PV Resah", format="%.2f", step=0.01, width="small"),
-                    "PV Client": st.column_config.NumberColumn("PV Client", format="%.2f", disabled=True, width="small"),
-                    "Marge €":   st.column_config.NumberColumn("Marge €", format="%.2f", disabled=True, width="small"),
-                    "Marge %":   st.column_config.NumberColumn("Marge %", format="%.2f %%", disabled=True, width="small"),
-                },
-                key="catalogue_editor"
-            )
-
-            edited["PV Client"] = edited.apply(
-                lambda r: round(sf(r["PV Resah"]) * 1.05, 2), axis=1
-            )
-            edited["Marge €"] = edited.apply(
-                lambda r: round(sf(r["PV Resah"]) - sf(r["PA €"]), 2), axis=1
-            )
-            edited["Marge %"] = edited.apply(
-                lambda r: round((sf(r["PV Resah"]) - sf(r["PA €"])) / sf(r["PV Resah"]), 4)
-                          if sf(r["PV Resah"]) > 0 else 0.0, axis=1
-            )
-
-            st.markdown("")
-            col_save, col_info = st.columns([1, 3])
-            with col_save:
-                if st.button("💾 Sauvegarder", type="primary", use_container_width=True):
-                    errors = []
-                    saved = 0
-                    for _, row in edited.iterrows():
-                        art = row["Article"]
-                        try:
-                            tr(
-                                """UPDATE produits SET
-                                    libelle=?, affichage=?, prix_ha_scc=?,
-                                    pv_resah=?, pv_client=?, marge_unitaire=?, tx_marge=?
-                                WHERE article=?""",
-                                [
-                                    ss(row["Libellé"]),
-                                    ss(row["Écran"]),
-                                    sf(row["PA €"]),
-                                    sf(row["PV Resah"]),
-                                    sf(row["PV Client"]),
-                                    sf(row["Marge €"]),
-                                    sf(row["Marge %"]),
-                                    art,
-                                ]
-                            )
-                            saved += 1
-                        except Exception as e:
-                            errors.append(f"{art}: {e}")
-                    if errors:
-                        st.error(f"{len(errors)} erreur(s) :\n" + "\n".join(errors))
-                    else:
-                        st.success(f"✅ {saved} article(s) mis à jour.")
-                        st.rerun()
-            with col_info:
-                st.caption("ℹ️ PV Client = PV Resah × 1,05 · Marge € = PV Resah − PA · Marge % = Marge € / PV Resah")
